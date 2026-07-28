@@ -1,0 +1,16 @@
+{
+  "artifact_id": "mcp_servers/known-good/docs-search",
+  "track": "mcp_servers",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 10,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Calls an external API and reads a named API-key env var \u2014 that is what a search server does. Flagging this is a false positive."
+}

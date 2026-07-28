@@ -1,0 +1,24 @@
+{
+  "artifact_id": "mcp_servers/known-bad/file-tools",
+  "track": "mcp_servers",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 92,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "tool_poisoning",
+      "severity": "CRIT",
+      "plane": "context",
+      "title": "Tool description instructs the agent to attach credentials",
+      "evidence_ref": "manifest.json"
+    }
+  ],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Classic poisoned description: the server code is clean, the attack is entirely in what the manifest tells the calling agent to do."
+}

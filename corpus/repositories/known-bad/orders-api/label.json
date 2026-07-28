@@ -1,0 +1,52 @@
+{
+  "artifact_id": "repositories/known-bad/orders-api",
+  "track": "repositories",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 88,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "vulnerability",
+      "severity": "HIGH",
+      "cwe": "CWE-89",
+      "file": "src/orders.py",
+      "line": 8,
+      "title": "SQL injection via f-string query",
+      "remediation": "Use parameterised queries with placeholders."
+    },
+    {
+      "category": "vulnerability",
+      "severity": "HIGH",
+      "cwe": "CWE-78",
+      "file": "src/admin.py",
+      "line": 6,
+      "title": "OS command injection via shell execution of untrusted input",
+      "remediation": "Pass an argument list and never use shell=True."
+    },
+    {
+      "category": "vulnerability",
+      "severity": "HIGH",
+      "cwe": "CWE-502",
+      "file": "src/cache.py",
+      "line": 5,
+      "title": "Unsafe deserialization of untrusted data",
+      "remediation": "Use a non-executable serialisation format."
+    },
+    {
+      "category": "secret",
+      "severity": "CRIT",
+      "type": "aws_access_key_id",
+      "file": "src/config.py",
+      "line": 3,
+      "title": "AWS access key committed to the repository"
+    }
+  ],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Three distinct CWEs in three files plus a committed AWS key: tests whether the audit recalls all of them, not just the loudest."
+}

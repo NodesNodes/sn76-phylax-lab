@@ -21,17 +21,39 @@
 - Exactly **one** UID on 76 has nonzero incentive: **uid 0**, the owner hotkey
   `5Cw4E2tJ…u5cs`, at incentive **1.000**. Every other UID of 186 is 0.000.
 - `GET https://api.phyi.dev/v1/leaderboard` returns
-  `{"rows":[],"meta":{"total_agents":0,"last_update":null}}`.
+  `{"rows":[],"meta":{"total_agents":0,"last_update":null}}` — but that endpoint
+  reports *scored* agents, not registered ones. See below.
 - `GET /v1/server-identity` returns the same hotkey pinned in upstream's
   `.env.example`, so the server we would submit to is the documented one.
 
-Read plainly: no third-party miner is being paid on 76 right now, and the
-backend says no agents are registered at all. That is consistent with either
-(a) nobody has submitted under the code-submission protocol yet, or (b)
-submissions exist but nothing clears tau and weight is defaulting to the owner.
-Distinguishing the two needs the authenticated `/v1/specialization/participants`
-endpoint, which requires a registered hotkey signature — i.e. we can only see it
-from inside.
+## The competition (public endpoint, no auth needed)
+
+`GET https://api.phyi.dev/v1/agents` is **unauthenticated** and lists every
+submitted agent. At 2026-07-28 ~11:40Z:
+
+- **58 agents, all `status: active`** — packages 19, skills 17, mcp_servers 12,
+  repositories 10.
+- **Every one of them: `runs: 0`, `evaluated: false`, `score: null`.** Not a
+  single agent has been executed by a validator yet. That is why the leaderboard
+  is empty and why uid 0 still holds all the incentive — the field is registered
+  but unscored.
+- The earliest submission is 2026-07-26 18:43Z; the bulk landed on 07-27 and
+  07-28. This field formed in about 36 hours.
+- Some are iterating hard already: `Vertex86310` (repositories), `Harbor29475`
+  (mcp), `Quartz51862` (skills), `Amber73104` (packages) are all at **v16**,
+  submitted within seconds of each other at 10:43Z — four hotkeys, four tracks,
+  different code hashes, almost certainly one operator covering every track.
+- Two clusters share an identical `agent_hash` across hotkeys: `phylax-*` ×4 and
+  `phylax-1/2/3` ×3 — the same bytes registered under several hotkeys.
+- Providers: 57 openrouter, 1 chutes.
+- **Agent code is not public.** `/v1/specialization/agent/{hotkey}/runnable`
+  returns 401 without a hotkey signature, so we see hash, name, version, track
+  and provider — never the source.
+
+Read plainly: the race has started but nothing has been scored, so no one has a
+measured lead. Being early is worth something; being early with a bad agent is
+worth nothing, because below tau pays zero and only the top three per track pay
+at all.
 
 This is a snapshot of one moment, not a standing condition. Re-check before
 acting on it.

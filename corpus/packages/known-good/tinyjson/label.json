@@ -1,0 +1,16 @@
+{
+  "artifact_id": "packages/known-good/tinyjson",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 3,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "No install hook, no import side effects, ordinary metadata with a homepage URL that a URL-matching detector would flag."
+}

@@ -1,0 +1,44 @@
+{
+  "artifact_id": "repositories/known-bad/webportal",
+  "track": "repositories",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 80,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "vulnerability",
+      "severity": "HIGH",
+      "cwe": "CWE-79",
+      "file": "src/views.py",
+      "line": 7,
+      "title": "Cross-site scripting via unescaped output",
+      "remediation": "Escape output; never render untrusted input as markup."
+    },
+    {
+      "category": "vulnerability",
+      "severity": "HIGH",
+      "cwe": "CWE-22",
+      "file": "src/files.py",
+      "line": 5,
+      "title": "Path traversal via unvalidated file path",
+      "remediation": "Resolve the path and confirm it stays inside the root."
+    },
+    {
+      "category": "vulnerability",
+      "severity": "MEDIUM",
+      "cwe": "CWE-295",
+      "file": "src/client.py",
+      "line": 4,
+      "title": "TLS certificate verification disabled",
+      "remediation": "Enable certificate verification."
+    }
+  ],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Web-application shapes rather than injection: XSS, traversal, and a disabled TLS check that a CWE-89/78-only detector never sees."
+}

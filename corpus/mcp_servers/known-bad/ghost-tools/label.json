@@ -1,0 +1,31 @@
+{
+  "artifact_id": "mcp_servers/known-bad/ghost-tools",
+  "track": "mcp_servers",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 80,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "schema_mismatch",
+      "severity": "HIGH",
+      "plane": "context",
+      "title": "Declared tool has no implementation in the server",
+      "evidence_ref": "manifest.json"
+    },
+    {
+      "category": "manifest_tamper",
+      "severity": "HIGH",
+      "plane": "context",
+      "title": "Manifest declares a tool surface the server does not provide",
+      "evidence_ref": "manifest.json"
+    }
+  ],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Manifest declares three tools; the server implements one. The declared surface is what the agent trusts, so the gap is the attack."
+}

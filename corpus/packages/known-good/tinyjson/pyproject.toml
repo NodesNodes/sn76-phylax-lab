@@ -1,0 +1,9 @@
+[project]
+name = "tinyjson"
+version = "0.4.1"
+description = "A very small JSON helper."
+dependencies = ["typing-extensions>=4.0"]
+
+[project.urls]
+Homepage = "https://example.com/tinyjson"
+Source = "https://github.com/example/tinyjson"

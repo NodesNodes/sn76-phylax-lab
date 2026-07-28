@@ -1,0 +1,16 @@
+{
+  "artifact_id": "mcp_servers/known-good/unit-convert",
+  "track": "mcp_servers",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 3,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Honest server: every declared tool is implemented, no network at all."
+}

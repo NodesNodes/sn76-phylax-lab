@@ -1,0 +1,16 @@
+{
+  "artifact_id": "repositories/known-good/clean-service",
+  "track": "repositories",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Parameterised SQL, escaped output, verified TLS. The tests/ tree contains a deliberately bad SQL string as a regression fixture \u2014 reporting it is a false positive."
+}

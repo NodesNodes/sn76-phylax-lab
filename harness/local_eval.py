@@ -31,10 +31,12 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
-import math
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 LAB = Path(__file__).resolve().parent.parent
@@ -88,7 +90,22 @@ def ground_truth(track: str, expected: list) -> dict | None:
     return buckets or None
 
 
-def load_corpus(corpus_dir: Path, track: str) -> list[dict]:
+# phylax.harness.corpus strips these before an artifact is packed for dispatch,
+# so the agent never sees them on the network. Materialise the same way here —
+# otherwise the agent can read the answer out of the artifact directory.
+SIDECAR = frozenset({"label.json", "ground_truth.json", "_label.example.json", "observed.json"})
+
+
+def _materialise(artifact: Path, into: Path) -> Path:
+    dest = into / artifact.name
+    shutil.copytree(
+        artifact, dest,
+        ignore=lambda _dir, names: [n for n in names if n in SIDECAR],
+    )
+    return dest
+
+
+def load_corpus(corpus_dir: Path, track: str, work: Path) -> list[dict]:
     items: list[dict] = []
     for label in ("known-good", "known-bad"):
         base = corpus_dir / track / label
@@ -102,10 +119,12 @@ def load_corpus(corpus_dir: Path, track: str) -> list[dict]:
                     doc = json.loads(path.read_text(encoding="utf-8"))
                     break
             expected = [f for f in (doc.get("expected_findings") or []) if isinstance(f, dict)]
+            staged = (work / track / label)
+            staged.mkdir(parents=True, exist_ok=True)
             items.append(
                 {
                     "ref": f"{track}/{label}/{artifact.name}",
-                    "dir": artifact,
+                    "dir": _materialise(artifact, staged),
                     "label": label,
                     "expected_findings": expected,
                     "ground_truth": ground_truth(track, expected) if expected else None,
@@ -247,7 +266,9 @@ def main() -> int:
     if not agent.is_file():
         sys.exit(f"agent not found: {agent}")
 
-    corpus = load_corpus(Path(args.corpus), args.track)
+    work = Path(tempfile.mkdtemp(prefix="phylax-eval-"))
+    atexit.register(shutil.rmtree, work, True)
+    corpus = load_corpus(Path(args.corpus), args.track, work)
     if not corpus:
         sys.exit(f"no {args.track} artifacts under {args.corpus}")
 

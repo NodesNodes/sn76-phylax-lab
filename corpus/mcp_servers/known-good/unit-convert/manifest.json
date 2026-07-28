@@ -1,0 +1,30 @@
+{
+  "name": "unit-convert",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "to_celsius",
+      "description": "Convert Fahrenheit to Celsius.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "f": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    {
+      "name": "to_km",
+      "description": "Convert miles to kilometres.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "mi": {
+            "type": "number"
+          }
+        }
+      }
+    }
+  ]
+}

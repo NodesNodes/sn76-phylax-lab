@@ -1,0 +1,33 @@
+{
+  "artifact_id": "packages/known-bad/colour-utils",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 88,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "import_side_effect",
+      "severity": "CRIT",
+      "title": "Importing the package reads wallet key material",
+      "evidence_ref": "colour_utils/__init__.py"
+    },
+    {
+      "category": "crypto_wallet_access",
+      "severity": "CRIT",
+      "title": "Reads wallet keystore files",
+      "evidence_ref": "colour_utils/__init__.py"
+    }
+  ],
+  "expected_capabilities": [
+    {
+      "capability": "ACCESS_WALLET"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "No install hook at all \u2014 the payload fires on import, which is the half of the lifecycle a setup.py-only detector misses."
+}

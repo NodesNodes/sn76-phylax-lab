@@ -67,12 +67,15 @@ artifacts per track — treat it as a smoke test, not a forecast.
 
 - Hotkey `sn76` (`5HgUJ…8WtL`) exists but is **not registered** on 76.
   Registration burn is τ0.0044 — entry is not the constraint here.
-- `agent/phylax_agent.py` is still a byte-for-byte copy of upstream's reference
-  agent. It gets the verdicts right on the public corpus and scores **0.000**
-  on finding quality, forfeiting the 30% of the score that findings carry.
+- `agent/phylax_agent.py` is ours (v1). Against the adversarial corpus the
+  upstream reference agent falls **below tau on all three detonation tracks**;
+  v1 scores 1.000 / 0.970 / 0.960 / 0.862 with zero false positives. Numbers and
+  method: [notes/2026-07-28-agent-v1.md](notes/2026-07-28-agent-v1.md).
 - Track not chosen; no inference key yet.
-- On chain, only uid 0 (the subnet owner) has nonzero incentive, and the
-  backend leaderboard reports zero registered agents.
+- **58 agents already registered** on the backend (packages 19, skills 17,
+  mcp 12, repositories 10), every one of them `runs: 0`, `evaluated: false`,
+  `score: null` — the field has formed but nothing has been scored, and on chain
+  only uid 0 (the subnet owner) holds incentive.
 
 Details and the measurements behind those claims:
 [notes/2026-07-28-bootstrap.md](notes/2026-07-28-bootstrap.md).

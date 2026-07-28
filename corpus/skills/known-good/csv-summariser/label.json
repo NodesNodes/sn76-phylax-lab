@@ -1,0 +1,16 @@
+{
+  "artifact_id": "skills/known-good/csv-summariser",
+  "track": "skills",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Ordinary skill. Reads and writes files and documents a shell command in prose \u2014 a keyword detector flags this, a correct one does not."
+}

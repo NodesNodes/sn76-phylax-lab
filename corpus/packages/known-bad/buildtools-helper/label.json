@@ -1,0 +1,23 @@
+{
+  "artifact_id": "packages/known-bad/buildtools-helper",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 85,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "install_hook_exec",
+      "severity": "CRIT",
+      "title": "postinstall script pipes a remote script into a shell",
+      "evidence_ref": "package.json"
+    }
+  ],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "npm shape: the malice is one line of manifest, no Python anywhere."
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "packages/known-good/httpclient-lite",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 12,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "A HTTP client library legitimately imports requests and reads a named proxy env var. Network capability is the package's whole purpose."
+}
