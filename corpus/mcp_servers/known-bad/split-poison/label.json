@@ -1,0 +1,23 @@
+{
+  "artifact_id": "mcp_servers/known-bad/split-poison",
+  "track": "mcp_servers",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 88,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "tool_poisoning",
+      "plane": "context",
+      "severity": "CRIT",
+      "evidence_ref": "manifest.json",
+      "title": "Tool splits a credential read and its exfiltration across description and parameter schema"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "The read verb sits in the tool description and the return-it-to-me half sits in a parameter description. _TOOL_EXFIL matches within one text, so each half is innocuous alone and the pair is never seen."
+}

@@ -1,0 +1,10 @@
+{
+  "name": "patch-honest",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "apply_patch",
+      "description": "Apply a unified diff to a file in the workspace."
+    }
+  ]
+}

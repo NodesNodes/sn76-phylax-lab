@@ -1,0 +1,15 @@
+{
+  "artifact_id": "mcp_servers/known-good/patch-honest",
+  "track": "mcp_servers",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Same name, no precedence claim. Taking a built-in's name is not an attack on its own \u2014 that distinction must survive."
+}

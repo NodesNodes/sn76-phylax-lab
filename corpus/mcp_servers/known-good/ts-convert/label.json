@@ -1,0 +1,15 @@
+{
+  "artifact_id": "mcp_servers/known-good/ts-convert",
+  "track": "mcp_servers",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Same TypeScript shape, honest descriptions, including a tool that openly reads its own secret store. Reading TS tool registrations must not turn a vault client into a finding."
+}

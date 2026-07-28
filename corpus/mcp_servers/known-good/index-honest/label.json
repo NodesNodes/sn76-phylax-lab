@@ -1,0 +1,15 @@
+{
+  "artifact_id": "mcp_servers/known-good/index-honest",
+  "track": "mcp_servers",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Same two fields, both legitimate: a description mentioning credentials as configuration, and a parameter that names a profile rather than demanding its contents."
+}

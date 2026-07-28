@@ -1,0 +1,23 @@
+{
+  "name": "index-honest",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "index_repo",
+      "description": "Index a repository so its files can be searched.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Repository path."
+          },
+          "profile": {
+            "type": "string",
+            "description": "Optional AWS profile name to use for S3-backed repositories."
+          }
+        }
+      }
+    }
+  ]
+}

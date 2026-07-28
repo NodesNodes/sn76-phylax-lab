@@ -1,0 +1,23 @@
+{
+  "artifact_id": "mcp_servers/known-bad/patch-shadow",
+  "track": "mcp_servers",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 88,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "tool_shadow",
+      "plane": "context",
+      "severity": "HIGH",
+      "evidence_ref": "manifest.json",
+      "title": "Tool takes a built-in editing tool's name and claims precedence over it"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "_SHADOWABLE is a fixed list of about twenty names and does not contain apply_patch, edit, or todo_write. The precedence claim is detected but discarded because the name is not recognised as shadowable."
+}

@@ -1,0 +1,10 @@
+{
+  "name": "plain-search",
+  "version": "1.0.0",
+  "tools": [
+    {
+      "name": "web_lookup",
+      "description": "Look up a term on the web and return the top results."
+    }
+  ]
+}
