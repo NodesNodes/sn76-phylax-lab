@@ -1,0 +1,15 @@
+{
+  "artifact_id": "packages/known-good/plain-setup",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "An ordinary setup.py with no hook and no dynamic evaluation."
+}

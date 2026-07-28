@@ -1,0 +1,23 @@
+{
+  "artifact_id": "packages/known-bad/js-boot",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 88,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "import_side_effect",
+      "plane": "action",
+      "severity": "HIGH",
+      "evidence_ref": "lib/boot.js",
+      "title": "Importing the package executes a remote script"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "_import_closure walks Python imports only, so a require() hop is never followed. The cross-file rule added today covers a read/send pair, and this is neither half \u2014 it is plain execution at import time, one module down."
+}

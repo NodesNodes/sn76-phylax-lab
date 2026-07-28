@@ -1,0 +1,23 @@
+{
+  "artifact_id": "packages/known-bad/chr-payload",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 88,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "install_hook_exec",
+      "plane": "action",
+      "severity": "CRIT",
+      "evidence_ref": "setup.py",
+      "title": "Install-time code decodes and executes an obfuscated payload"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "_OBFUSCATION matches base64/atob/fromCharCode/hex escapes but not chr() arithmetic over a code-point list, which needs no library at all."
+}

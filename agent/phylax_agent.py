@@ -199,10 +199,23 @@ class _File:
         if self.suffix != ".py":
             if self.suffix not in _CODE_SUFFIXES:
                 return ""
-            return "\n".join(
-                line for line in self.lines
-                if line[:1] not in (" ", "\t", "") and not line.lstrip().startswith(("//", "#"))
-            )
+            # Zero indentation is the only structure available without a parser,
+            # but `exports.send = (b) => axios.post(...)` sits at zero indent and
+            # is a *definition* — the body runs when something calls it. That is
+            # the ordinary way a JS module exports anything, so reading it as
+            # import-time execution flags most honest packages. Everything from
+            # the arrow (or the `function` keyword) rightwards is deferred, so
+            # the line is cut there and only the assignment itself remains.
+            out = []
+            for line in self.lines:
+                if line[:1] in (" ", "\t", "") or line.lstrip().startswith(("//", "#", "*")):
+                    continue
+                for marker in ("=>", "function"):
+                    cut = line.find(marker)
+                    if cut != -1:
+                        line = line[:cut]
+                out.append(line)
+            return "\n".join(out)
         try:
             tree = ast.parse(self.text)
         except (SyntaxError, ValueError):
@@ -355,7 +368,12 @@ _ENV_BULK = re.compile(
     r"dict\s*\(\s*os\.environ\s*\)|os\.environ\.copy\s*\(\)|"
     r"json\.dumps\s*\(\s*(?:dict\s*\(\s*)?os\.environ|JSON\.stringify\s*\(\s*process\.env|"
     r"\{\s*\*\*\s*os\.environ|str\s*\(\s*os\.environ\s*\)|"
-    r"=\s*(?:dict\s*\(\s*)?os\.environ\s*(?:\)|$|,)")
+    r"=\s*(?:dict\s*\(\s*)?os\.environ\s*(?:\)|$|,)|"
+    # The JS forms that copy the whole environment without stringifying it:
+    # object spread is how modern code does this, and Object.assign is the
+    # older spelling of the same thing.
+    r"\{\s*\.\.\.\s*process\.env\s*\}|Object\.assign\s*\(\s*\{\s*\}\s*,\s*process\.env|"
+    r"os\.environ\.items\s*\(\s*\)|process\.env\s*\)\s*\.\s*(?:entries|keys)")
 _ENV_NAMED_SECRET = re.compile(
     r"(?:os\.environ(?:\.get)?\s*[\(\[]|getenv\s*\(|process\.env\.)\s*[\"']?"
     r"[A-Za-z_]*(?:TOKEN|SECRET|KEY|PASSW|CREDENTIAL|AUTH|SESSION|COOKIE|PRIVATE)")
@@ -1268,6 +1286,11 @@ def _lifecycle_commands(files: list[_File]) -> dict[str, str]:
     return out
 
 
+# Relative specifiers only: `require('./lib/boot')`, `import x from "../util"`.
+_JS_REQUIRE = re.compile(
+    r"""(?:require\s*\(\s*|(?:^|\s)from\s+|\bimport\s+)["'](\.{1,2}/[\w./-]+)["']""")
+
+
 def _import_closure(entries: list[_File], files: list[_File]) -> list[_File]:
     """Every module in the bundle reachable by importing an entry point.
 
@@ -1285,6 +1308,25 @@ def _import_closure(entries: list[_File], files: list[_File]) -> list[_File]:
             continue
         seen.add(current.rel)
         order.append(current)
+        # JS entry points pull their work in with require()/import, and the
+        # module body of whatever they pull runs on import exactly as a Python
+        # module's does. Only relative specifiers are followed — a bare name is
+        # a third-party package and not evidence about this one.
+        if current.suffix in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
+            base = current.rel.rsplit("/", 1)[0] if "/" in current.rel else ""
+            for spec in _JS_REQUIRE.findall(current.text):
+                target = spec[2:] if spec.startswith("./") else spec
+                while target.startswith("../"):
+                    target = target[3:]
+                    base = base.rsplit("/", 1)[0] if "/" in base else ""
+                stem = f"{base}/{target}" if base else target
+                for candidate in (stem, f"{stem}.js", f"{stem}.mjs", f"{stem}.cjs",
+                                  f"{stem}.ts", f"{stem}/index.js", f"{stem}/index.ts"):
+                    nxt = by_rel.get(candidate)
+                    if nxt is not None and nxt.rel not in seen:
+                        queue.append(nxt)
+                        break
+            continue
         if current.suffix != ".py":
             continue
         try:

@@ -1,0 +1,15 @@
+{
+  "artifact_id": "packages/known-good/js-quiet",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Same require hop, same child_process import \u2014 but the exec sits inside an exported function and runs only when called. Following requires must not turn a shelling-out helper into an import-time finding."
+}

@@ -1,0 +1,15 @@
+{
+  "artifact_id": "packages/known-good/env-named",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Named variables, its own API, egress inside a function. The bulk-capture rule must keep distinguishing 'reads its own config' from 'ships the environment'."
+}

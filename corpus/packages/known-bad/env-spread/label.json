@@ -1,0 +1,23 @@
+{
+  "artifact_id": "packages/known-bad/env-spread",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 88,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "credential_theft",
+      "plane": "action",
+      "severity": "CRIT",
+      "evidence_ref": "index.js",
+      "title": "Whole environment captured and sent to an external host"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "_ENV_BULK knows JSON.stringify(process.env) and dict(os.environ) but not the object-spread form { ...process.env }, which is how modern JS copies it."
+}
