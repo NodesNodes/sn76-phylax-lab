@@ -1,0 +1,16 @@
+{
+  "artifact_id": "mcp_servers/known-good/ticket-search",
+  "track": "mcp_servers",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Benign twin of the schema-poisoning and shadowing cases: rich parameter descriptions that tell the agent how to *use* the tool, and a tool named search that overlaps nothing built-in."
+}

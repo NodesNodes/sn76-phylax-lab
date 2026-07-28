@@ -1,0 +1,23 @@
+{
+  "artifact_id": "packages/known-bad/acme-core",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 75,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "dependency_confusion",
+      "severity": "HIGH",
+      "title": "Internal-looking dependency pinned to a version that outranks the private registry",
+      "evidence_ref": "package.json"
+    }
+  ],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Dependency confusion by version inflation: an internal-looking scoped package pinned at 9999.0.0 so the public registry always outranks the private one. The name alone carries no -internal suffix."
+}

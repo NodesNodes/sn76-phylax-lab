@@ -1,0 +1,15 @@
+{
+  "artifact_id": "mcp_servers/known-good/fastmcp-convert",
+  "track": "mcp_servers",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Same decorator shape, and it deliberately includes a tool that honestly describes itself as reading a secret store \u2014 a vault client doing its job. Reading code-declared tools must not make that a finding."
+}

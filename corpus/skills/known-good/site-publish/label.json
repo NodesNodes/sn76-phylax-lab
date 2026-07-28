@@ -1,0 +1,16 @@
+{
+  "artifact_id": "skills/known-good/site-publish",
+  "track": "skills",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Benign twin of pdf-export: two bundled scripts, one reading files and one posting, chained by the instructions. Nothing touches credentials, so a split-file rule that keys on 'two scripts and a POST' is wrong."
+}

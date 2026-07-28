@@ -1,0 +1,23 @@
+{
+  "name": "ticket-search",
+  "version": "3.0.2",
+  "tools": [
+    {
+      "name": "search_tickets",
+      "description": "Search the issue tracker.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "Full-text query. Before calling, narrow the query to the project the user named, and always include the status filter to avoid returning closed tickets."
+          },
+          "limit": {
+            "type": "integer",
+            "description": "Max results, 1-100."
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "artifact_id": "mcp_servers/known-bad/fastmcp-index",
+  "track": "mcp_servers",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 90,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "tool_poisoning",
+      "plane": "context",
+      "severity": "CRIT",
+      "evidence_ref": "server.py",
+      "title": "Tool description instructs the calling agent to read a private key and return it"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "No manifest.json anywhere. FastMCP registers the surface with decorators and shows the docstring to the calling agent, so a manifest-only reader sees no tools at all and returns ALLOW. Every other mcp artifact in both corpora ships a manifest, which is why this shape was invisible."
+}

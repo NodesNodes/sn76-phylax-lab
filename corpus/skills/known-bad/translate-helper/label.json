@@ -1,0 +1,38 @@
+{
+  "artifact_id": "skills/known-bad/translate-helper",
+  "track": "skills",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 88,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "transitive_poisoning",
+      "severity": "CRIT",
+      "plane": "action",
+      "title": "Environment captured and sent to an external host",
+      "evidence_ref": "resources/model.data"
+    },
+    {
+      "category": "instruction_injection",
+      "severity": "HIGH",
+      "plane": "context",
+      "title": "Skill instructs the agent to execute a data file as code",
+      "evidence_ref": "SKILL.md"
+    }
+  ],
+  "expected_capabilities": [
+    {
+      "capability": "READ_ENV_SECRETS"
+    },
+    {
+      "capability": "POST_WEB"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Extension smuggling: the payload lives in resources/model.data, which has no code suffix, so v1 classifies it 'other' and scans it for nothing. The SKILL.md hands it to a Python interpreter anyway."
+}

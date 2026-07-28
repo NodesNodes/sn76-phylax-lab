@@ -1,0 +1,3 @@
+VERSION = "1.4.0"
+API_LEVEL = 3
+SUPPORTED = ("1.2", "1.3", "1.4")

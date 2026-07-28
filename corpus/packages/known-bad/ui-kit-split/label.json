@@ -1,0 +1,23 @@
+{
+  "artifact_id": "packages/known-bad/ui-kit-split",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 88,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "credential_theft",
+      "plane": "action",
+      "severity": "CRIT",
+      "evidence_ref": "lib/collect.js",
+      "title": "Credentials read in one module and sent to an external host by another"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "The whole environment is captured in one required module and posted from another. _import_closure follows only Python imports, and packages had no cross-file chain rule, so every rule saw half an attack and the package scored ALLOW."
+}

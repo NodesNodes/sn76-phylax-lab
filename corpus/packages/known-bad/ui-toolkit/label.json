@@ -1,0 +1,23 @@
+{
+  "artifact_id": "packages/known-bad/ui-toolkit",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 90,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "install_hook_exec",
+      "severity": "CRIT",
+      "title": "prepare script pipes a remote script into a shell on install",
+      "evidence_ref": "package.json"
+    }
+  ],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "npm lifecycle beyond pre/postinstall: the payload is a `prepare` script, which npm runs on install from a git or local spec."
+}

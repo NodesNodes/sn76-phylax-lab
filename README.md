@@ -35,6 +35,7 @@ agent/phylax_agent.py                  our agent — the only thing that gets su
 agent/baseline/reference_agent.*.py    frozen copy of upstream's reference agent, per commit
 harness/local_eval.py                  offline scorer: our agent vs a labelled corpus
 scripts/status.sh                      registration + burn cost + our UID row on 76
+scripts/preflight.sh                   check the agent inside the sandbox image before shipping
 scripts/submit.sh                      sign and POST the agent (asks first — this is outbound)
 scripts/sync_upstream.sh               pull upstream, diff what changed under us
 docs/mechanism-digest.md               scoring rules that drive decisions, read out of the code
@@ -48,9 +49,17 @@ notes/                                 session notes, measurements, state snapsh
 cp .env.example .env      # then fill PHYLAX_TRACK and PHYLAX_EXECUTION_API_KEY
 bash scripts/status.sh                          # are we registered? what does entry cost?
 python3 harness/local_eval.py --track packages  # score our agent offline
+bash scripts/preflight.sh                       # does it survive the sandbox runtime?
 bash scripts/sync_upstream.sh                   # did upstream move the goalposts?
 bash scripts/submit.sh                          # ship it (prompts before sending)
 ```
+
+`preflight.sh` runs the agent inside the reference sandbox image: imports under
+`-W error`, returns a well-formed report, agrees byte-for-byte across three
+reps. `submit.sh` runs it before the POST. This is not ceremony — a `(?i)` in
+the middle of a regex compiles on our Python 3.10 and raises on the sandbox's
+3.11, at import, where the agent's own fallback cannot catch it. Every rep of
+every task is lost and `local_eval.py` still reports 1.000.
 
 `local_eval.py` imports upstream's `phylax.analysis.*` and reproduces the
 validator's loop — repetitions, median-ordinal verdict consensus, the evidence
@@ -67,10 +76,19 @@ artifacts per track — treat it as a smoke test, not a forecast.
 
 - Hotkey `sn76` (`5HgUJ…8WtL`) exists but is **not registered** on 76.
   Registration burn is τ0.0044 — entry is not the constraint here.
-- `agent/phylax_agent.py` is ours (v1). Against the adversarial corpus the
-  upstream reference agent falls **below tau on all three detonation tracks**;
-  v1 scores 1.000 / 0.970 / 0.960 / 0.862 with zero false positives. Numbers and
-  method: [notes/2026-07-28-agent-v1.md](notes/2026-07-28-agent-v1.md).
+- `agent/phylax_agent.py` is ours (v2). Against our 25-artifact adversarial
+  corpus it scores **1.000 / 1.000 / 1.000 / 0.862** with zero false positives,
+  and holds 1.000 / 1.000 / 1.000 / 0.760 on the public corpus. The upstream
+  reference agent falls below tau on all three detonation tracks.
+  v1 → v2 method and the two jail findings:
+  [notes/2026-07-28-agent-v2.md](notes/2026-07-28-agent-v2.md); v1's design
+  rationale is still [notes/2026-07-28-agent-v1.md](notes/2026-07-28-agent-v1.md).
+- **Upstream probe gate is broken at 42cbf00** and discards every repetition on
+  `skills` / `packages` / `mcp_servers` — the harness creates `/task/workspace`
+  as root and the agent runs as uid 1000, so the required probe write fails.
+  Every agent derived from the reference scores zero on those tracks; ours works
+  around it in `_write_probe_file`. Verified in the real jail both ways.
+  `repositories` is unaffected. Not reported upstream yet.
 - Track not chosen; no inference key yet.
 - **58 agents already registered** on the backend (packages 19, skills 17,
   mcp 12, repositories 10), every one of them `runs: 0`, `evaluated: false`,

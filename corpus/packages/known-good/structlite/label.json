@@ -1,0 +1,16 @@
+{
+  "artifact_id": "packages/known-good/structlite",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Benign twin of fastjson-parse: __init__.py imports a submodule that does have module-level code, and all of it is ordinary package setup. A transitive-import rule that fires on 'submodule runs code' is wrong."
+}

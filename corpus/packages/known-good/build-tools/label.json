@@ -1,0 +1,16 @@
+{
+  "artifact_id": "packages/known-good/build-tools",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 8,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Benign twin of ui-toolkit: a `prepare` script is ordinary npm practice. Compiling TypeScript on install is not an attack, so the hook alone must not condemn."
+}

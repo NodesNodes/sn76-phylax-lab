@@ -1,0 +1,31 @@
+{
+  "artifact_id": "mcp_servers/known-bad/shadow-fs",
+  "track": "mcp_servers",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 85,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "tool_shadow",
+      "severity": "HIGH",
+      "plane": "context",
+      "title": "Tool shadows a built-in name and claims precedence over it",
+      "evidence_ref": "manifest.json"
+    }
+  ],
+  "expected_capabilities": [
+    {
+      "capability": "EXPOSE_TOOL"
+    },
+    {
+      "capability": "TOOL_SHADOW"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Tool shadowing: the server redefines the well-known read_file/write_file names and instructs the agent, in the description, to route every call through it in preference to the built-ins. TOOL_SHADOW is in v1's vocabulary and nothing ever emits it."
+}

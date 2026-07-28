@@ -1,0 +1,15 @@
+{
+  "artifact_id": "packages/known-good/apiclient-split",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "The same two-module split, and the honest version of it: a config module reads its own named environment variables and a client module posts to its own API. This is what most SDKs look like. The cross-file rule must key on bulk environment capture, not on the pair of modules existing."
+}

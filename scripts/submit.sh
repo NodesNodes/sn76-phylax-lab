@@ -34,6 +34,15 @@ TRACK=$(grep -E '^PHYLAX_TRACK=' "$LAB/.env" | cut -d= -f2-)
 AGENT=$(grep -E '^PHYLAX_AGENT_CODE_PATH=' "$ENVTMP" | cut -d= -f2-)
 [ -n "$TRACK" ] || { echo "PHYLAX_TRACK is empty in .env — pick a track first" >&2; exit 1; }
 
+# The bytes we are about to publish are the bytes that get scored, and a file
+# that fails to import in the sandbox scores zero on every task of the round
+# with no way to tell from the offline numbers. Check before sending, not after.
+if [ "${PHYLAX_SKIP_PREFLIGHT:-}" = "1" ]; then
+  echo "preflight skipped (PHYLAX_SKIP_PREFLIGHT=1)" >&2
+else
+  PHYLAX_AGENT="$AGENT" bash "$LAB/scripts/preflight.sh"
+fi
+
 echo "about to POST to $(grep -E '^PHYLAX_SERVER_URL=' "$LAB/.env" | cut -d= -f2-)"
 echo "  track  $TRACK"
 echo "  agent  $AGENT  ($(wc -c <"$AGENT") bytes, sha256 $(sha256sum "$AGENT" | cut -c1-16)…)"
@@ -43,4 +52,11 @@ if [ "${1:-}" != "-y" ]; then
   [ "$ans" = "y" ] || { echo "aborted"; exit 1; }
 fi
 
-exec python3 "$UPSTREAM/scripts/register_miner.py" "$ENVTMP"
+# register_miner.py signs with `from substrateinterface import Keypair`, a
+# package Bittensor 11 neither ships nor needs. Run it on the SDK's interpreter
+# with scripts/_compat/ ahead on the path, which supplies that name from
+# bittensor_core. See scripts/_compat/substrateinterface.py.
+PY="${PHYLAX_PYTHON:-/root/.bt/bin/python}"
+[ -x "$PY" ] || PY=python3
+exec env PYTHONPATH="$LAB/scripts/_compat${PYTHONPATH:+:$PYTHONPATH}" \
+  "$PY" "$UPSTREAM/scripts/register_miner.py" "$ENVTMP"

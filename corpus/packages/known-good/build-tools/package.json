@@ -1,0 +1,13 @@
+{
+  "name": "build-tools",
+  "version": "1.9.2",
+  "scripts": {
+    "build": "tsc -b",
+    "prepare": "tsc -b",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "jest": "^29.0.0"
+  }
+}

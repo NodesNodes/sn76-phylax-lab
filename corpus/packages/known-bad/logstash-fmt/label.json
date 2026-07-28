@@ -1,0 +1,30 @@
+{
+  "artifact_id": "packages/known-bad/logstash-fmt",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 88,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "import_side_effect",
+      "severity": "HIGH",
+      "title": "Importing the package decodes and executes an obfuscated payload",
+      "evidence_ref": "logstash_fmt/_runtime.py"
+    }
+  ],
+  "expected_capabilities": [
+    {
+      "capability": "IMPORT_SIDE_EFFECT"
+    },
+    {
+      "capability": "EXECUTE_SOURCE_CODE"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Import-time payload with nothing to grep: the module body decodes a base64 blob and execs it. No requests, no os.environ, no wallet path in the source \u2014 the malice is only visible as decode-then-execute."
+}

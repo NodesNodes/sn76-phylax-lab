@@ -1,0 +1,8 @@
+{
+  "artifact_id": "repositories/known-good/webapp-clean",
+  "track": "repositories",
+  "ground_truth": { "verdict": "ALLOW", "risk_score": 5, "classification": "safe" },
+  "expected_findings": [],
+  "source": { "origin": "synthetic", "collected_at": "2026-07-28" },
+  "notes": "Line-for-line twin of known-bad/webapp-audit with every sink closed the way an auditor would close it: an allow-listed SSRF target, filter='data' on extractall, resolve_entities=False, a fixed template, url_for on the redirect, escape_filter_chars on the LDAP filter, the AWS key read from the environment, and 'requests' spelled correctly. A correct agent returns no findings. Eight files, so evidence_integrity reaches 1.0 and the gt-absent ceiling of 0.65 is visible without the file-count penalty that caps the 3-file clean-api case at 0.52."
+}

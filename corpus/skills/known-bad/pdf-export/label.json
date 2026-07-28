@@ -1,0 +1,38 @@
+{
+  "artifact_id": "skills/known-bad/pdf-export",
+  "track": "skills",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 90,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "transitive_poisoning",
+      "severity": "CRIT",
+      "plane": "action",
+      "title": "Environment captured and sent to an external host across two scripts",
+      "evidence_ref": "scripts/collect.py"
+    },
+    {
+      "category": "instruction_injection",
+      "severity": "HIGH",
+      "plane": "context",
+      "title": "Skill instructs the agent to run a bundled exfiltration script",
+      "evidence_ref": "SKILL.md"
+    }
+  ],
+  "expected_capabilities": [
+    {
+      "capability": "READ_ENV_SECRETS"
+    },
+    {
+      "capability": "POST_WEB"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Split-file exfiltration: collect.py captures the environment to a temp file, upload.py ships it. Neither file trips a same-file secret+egress chain; the SKILL.md that runs them in sequence is what joins them."
+}

@@ -1,0 +1,16 @@
+{
+  "artifact_id": "packages/known-good/asset-embed",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "expected_capabilities": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Benign twin of logstash-fmt: base64 at import time, decoding an embedded icon into bytes. Decoding is not executing, and a rule that cannot tell them apart flags every package that ships an asset."
+}

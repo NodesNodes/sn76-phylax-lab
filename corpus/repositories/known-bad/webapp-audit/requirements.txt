@@ -1,0 +1,5 @@
+flask==3.0.0
+reqeusts==2.31.0
+lxml==5.1.0
+python-ldap==3.4.4
+billing==1.0.0

@@ -1,0 +1,3 @@
+[project]
+name = "logstash-fmt"
+version = "0.9.4"

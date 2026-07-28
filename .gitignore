@@ -1,6 +1,19 @@
+# Secrets & local config. `.env` carries the inference key and is never
+# committed; `.env.example` is the template and is the one exception.
 .env
+.env.*
+!.env.example
 *.key
+
+# Wallets — NEVER commit. Nothing lives here today, and it stays that way.
+wallets/
+hotkeys/
+
+# Per-machine tooling
+.claude/
+.venv/
+
+# Generated
 state/
 __pycache__/
 *.pyc
-.venv/

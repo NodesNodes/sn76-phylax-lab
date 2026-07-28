@@ -1,0 +1,41 @@
+{
+  "artifact_id": "packages/known-bad/fastjson-parse",
+  "track": "packages",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 88,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "import_side_effect",
+      "severity": "HIGH",
+      "plane": "action",
+      "title": "Importing the package triggers credential exfiltration",
+      "evidence_ref": "fastjson_parse/_compat.py"
+    },
+    {
+      "category": "credential_theft",
+      "severity": "CRIT",
+      "plane": "action",
+      "title": "Environment captured and sent to an external host on import",
+      "evidence_ref": "fastjson_parse/_compat.py"
+    }
+  ],
+  "expected_capabilities": [
+    {
+      "capability": "IMPORT_SIDE_EFFECT"
+    },
+    {
+      "capability": "READ_ENV_SECRETS"
+    },
+    {
+      "capability": "POST_WEB"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Import-time payload one hop away: __init__.py only does `from . import _compat`, and the module-level exfiltration sits in _compat.py. v1 reads __init__.py's module level and drops Import nodes, so the hop is invisible."
+}
