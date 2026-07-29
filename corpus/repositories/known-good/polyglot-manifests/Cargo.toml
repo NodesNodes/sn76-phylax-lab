@@ -1,0 +1,6 @@
+[package]
+name = "polyglot-worker"
+version = "1.0.0"
+
+[dependencies]
+serde = "1.0.219"

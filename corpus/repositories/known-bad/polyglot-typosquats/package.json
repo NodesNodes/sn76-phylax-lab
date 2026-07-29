@@ -1,0 +1,6 @@
+{
+  "name": "polyglot-ui",
+  "optionalDependencies": {
+    "lodahs": "^4.17.21"
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "polyglot-ui",
+  "optionalDependencies": {
+    "lodash": "^4.17.21"
+  }
+}

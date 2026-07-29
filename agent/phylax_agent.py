@@ -3094,6 +3094,86 @@ _SECRET_RULES: tuple[tuple[str, re.Pattern], ...] = (
 _TEST_PATH = re.compile(r"(?:^|/)(?:tests?|spec|__tests__|fixtures?|examples?|docs?)/")
 
 
+def _repository_dependencies(files: list[_File]) -> list[dict]:
+    """Dependency inventory across the manifest forms used by the reference agent.
+
+    Inventory is evidence, not a finding. Keeping the parser multi-ecosystem
+    lets the existing typosquat/confusion rules see the same repository surface
+    in pyproject, optional npm, Go and Cargo projects without treating an
+    unfamiliar manifest as malicious.
+    """
+    deps: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+
+    def add(name: str, version: str, ecosystem: str) -> None:
+        name = (name or "").strip()
+        key = (ecosystem, name.lower())
+        if not name or key in seen:
+            return
+        seen.add(key)
+        deps.append({
+            "name": name,
+            "version": (version or "").strip(),
+            "ecosystem": ecosystem,
+            "cve": [],
+        })
+
+    for f in files:
+        if f.base == "requirements.txt":
+            for line in f.lines:
+                line = line.strip()
+                if not line or line[0] in "#-":
+                    continue
+                match = re.match(
+                    r"([A-Za-z0-9_.\-]+)\s*(?:[=<>!~]=?\s*([0-9][\w.\-]*))?",
+                    line,
+                )
+                if match:
+                    add(match.group(1), match.group(2) or "", "pypi")
+        elif f.base == "package.json":
+            try:
+                data = json.loads(f.text)
+            except (ValueError, TypeError):
+                data = None
+            if isinstance(data, dict):
+                for section in (
+                    "dependencies", "devDependencies", "optionalDependencies",
+                ):
+                    block = data.get(section)
+                    if isinstance(block, dict):
+                        for name, version in block.items():
+                            add(str(name), str(version), "npm")
+            else:
+                for name, version in re.findall(
+                    r'"([A-Za-z0-9_.@/\-]+)"\s*:\s*"([\^~>=<0-9][^"]*)"',
+                    f.text,
+                ):
+                    add(name, version, "npm")
+        elif f.base in ("pyproject.toml", "setup.py", "setup.cfg", "pipfile"):
+            # Covers install_requires arrays and comparison-form TOML/CFG
+            # entries. Bare project metadata (`name = "service"`) has no
+            # comparator and is deliberately not promoted to a dependency.
+            for name, version in re.findall(
+                r"""["']?([A-Za-z0-9_.\-]+)["']?\s*"""
+                r"""(?:[=<>~!]=)\s*["']?([0-9][\w.\-]*)""",
+                f.text,
+            ):
+                add(name, version, "pypi")
+        elif f.base == "go.mod":
+            for name, version in re.findall(
+                r"(?m)^\s*([\w.\-]+(?:/[\w.\-]+)+)\s+v([\d][\w.\-]*)",
+                f.text,
+            ):
+                add(name, "v" + version, "go")
+        elif f.base == "cargo.toml":
+            for name, version in re.findall(
+                r"""(?m)^\s*([A-Za-z0-9_\-]+)\s*=\s*["']([\d][\w.\-]*)""",
+                f.text,
+            ):
+                add(name, version, "crates")
+    return deps
+
+
 def _analyse_repositories(files: list[_File]) -> dict:
     vulnerabilities: list[dict] = []
     secrets: list[dict] = []
@@ -3131,36 +3211,7 @@ def _analyse_repositories(files: list[_File]) -> dict:
     vulnerabilities.sort(key=lambda v: (v["file"], v["line"], v["cwe"]))
     secrets.sort(key=lambda s: (s["file"], s["line"], s["type"]))
 
-    deps: list[dict] = []
-    seen_dep: set[str] = set()
-    for f in files:
-        if f.base == "requirements.txt":
-            for line in f.lines:
-                line = line.strip()
-                if not line or line[0] in "#-":
-                    continue
-                m = re.match(r"([A-Za-z0-9_.\-]+)\s*(?:[=<>!~]=?\s*([0-9][\w.\-]*))?", line)
-                if m and m.group(1).lower() not in seen_dep:
-                    seen_dep.add(m.group(1).lower())
-                    deps.append({"name": m.group(1), "version": m.group(2) or "",
-                                 "ecosystem": "pypi", "cve": []})
-        elif f.base == "package.json":
-            try:
-                data = json.loads(f.text)
-            except ValueError:
-                continue
-            if not isinstance(data, dict):
-                continue
-            for section in ("dependencies", "devDependencies"):
-                block = data.get(section)
-                if not isinstance(block, dict):
-                    continue
-                for dep_name, ver in sorted(block.items()):
-                    if str(dep_name).lower() in seen_dep:
-                        continue
-                    seen_dep.add(str(dep_name).lower())
-                    deps.append({"name": str(dep_name), "version": str(ver),
-                                 "ecosystem": "npm", "cve": []})
+    deps = _repository_dependencies(files)
 
     typosquat = [
         {"name": d["name"], "of": p, "ecosystem": d["ecosystem"]}

@@ -10,8 +10,9 @@ ENVF="${PHYLAX_ENV_FILE:-$LAB/.env}"
 [ -f "$ENVF" ] || { echo "no env file at $ENVF" >&2; exit 1; }
 
 WALLET=$(grep -E '^WALLET_NAME=' "$ENVF" 2>/dev/null | cut -d= -f2- || echo default)
-HOTKEY=$(grep -E '^WALLET_HOTKEY=' "$ENVF" 2>/dev/null | cut -d= -f2- || echo sn76)
-WALLET=${WALLET:-default}; HOTKEY=${HOTKEY:-sn76}
+HOTKEY=$(grep -E '^WALLET_HOTKEY=' "$ENVF" 2>/dev/null | cut -d= -f2-)
+WALLET=${WALLET:-default}
+[ -n "$HOTKEY" ] || { echo "WALLET_HOTKEY is empty in $ENVF" >&2; exit 1; }
 
 SS58=$(python3 -c "
 import json,sys,pathlib

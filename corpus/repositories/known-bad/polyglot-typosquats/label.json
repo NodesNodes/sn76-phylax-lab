@@ -1,0 +1,30 @@
+{
+  "artifact_id": "repositories/known-bad/polyglot-typosquats",
+  "track": "repositories",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 80,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "supply_chain",
+      "type": "typosquat",
+      "name": "reqeusts",
+      "severity": "HIGH",
+      "title": "Dependency 'reqeusts' is a transposition typosquat of 'requests'"
+    },
+    {
+      "category": "supply_chain",
+      "type": "typosquat",
+      "name": "lodahs",
+      "severity": "HIGH",
+      "title": "Optional dependency 'lodahs' is a transposition typosquat of 'lodash'"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-29"
+  },
+  "notes": "Malicious twin for the manifest forms newly aligned with the upstream reference parser: comparison-form pyproject dependencies and npm optionalDependencies."
+}

@@ -1,0 +1,41 @@
+{
+  "code_path": "agent/phylax_agent.py",
+  "entrypoint": "agent_main",
+  "upstream_verified": "f455ac6",
+  "working_code_sha256": "98930d3d583092174b35b455bc0a48d9194e7d6b12cf9b862cd1d5f0542228e8",
+  "active_v1_code_sha256": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03",
+  "profiles": [
+    {
+      "track": "packages",
+      "env": ".env",
+      "label": "phylax-packages-v1",
+      "state": "active",
+      "version": 1,
+      "submitted_code_sha256": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03"
+    },
+    {
+      "track": "mcp_servers",
+      "env": ".env.mcp",
+      "label": "phylax-mcp-v1",
+      "state": "active",
+      "version": 1,
+      "submitted_code_sha256": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03"
+    },
+    {
+      "track": "skills",
+      "env": ".env.skills",
+      "template": "configs/skills.env.example",
+      "label": "phylax-skills-v1",
+      "state": "prepared",
+      "version": null
+    },
+    {
+      "track": "repositories",
+      "env": ".env.repositories",
+      "template": "configs/repositories.env.example",
+      "label": "phylax-repositories-v1",
+      "state": "prepared",
+      "version": null
+    }
+  ]
+}

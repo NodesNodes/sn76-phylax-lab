@@ -35,7 +35,11 @@ PY
 
 TRACK=$(grep -E '^PHYLAX_TRACK=' "$ENVF" | cut -d= -f2-)
 AGENT=$(grep -E '^PHYLAX_AGENT_CODE_PATH=' "$ENVTMP" | cut -d= -f2-)
+HOTKEY=$(grep -E '^WALLET_HOTKEY=' "$ENVF" | cut -d= -f2-)
+LABEL=$(grep -E '^PHYLAX_MINER_LABEL=' "$ENVF" | cut -d= -f2-)
 [ -n "$TRACK" ] || { echo "PHYLAX_TRACK is empty in .env — pick a track first" >&2; exit 1; }
+[ -n "$HOTKEY" ] || { echo "WALLET_HOTKEY is empty in $ENVF — create a dedicated hotkey first" >&2; exit 1; }
+[ -n "$LABEL" ] || { echo "PHYLAX_MINER_LABEL is empty in $ENVF" >&2; exit 1; }
 
 # The bytes we are about to publish are the bytes that get scored, and a file
 # that fails to import in the sandbox scores zero on every task of the round

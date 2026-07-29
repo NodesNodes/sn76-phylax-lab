@@ -17,3 +17,6 @@ hotkeys/
 state/
 __pycache__/
 *.pyc
+
+# Stray shell-redirection artifact seen in earlier lab sessions.
+/1

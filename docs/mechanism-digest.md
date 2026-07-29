@@ -1,7 +1,7 @@
 # SN76 mechanism digest
 
 Only the parts that change what we build or when we act. Everything here is
-read out of upstream code at `42cbf00`, not from the marketing docs — where the
+read out of upstream code at `f455ac6`, not from the marketing docs — where the
 docs and the code disagree, the code is what runs. Line refs are into
 `../phylax-subnet/`.
 
@@ -57,11 +57,37 @@ Repositories instead: mean over tasks of per-rep `F2` recall against
 | mcp_servers | 0.20 | 0.22 | 25 | 3 | 15 |
 | skills | 0.20 | 0.18 | 30 | 3 | 8 |
 
-Below tau earns **zero**. Above tau, only the **top three** in the track earn,
-split 0.50 / 0.30 / 0.20. So the miner weight vector for a track winner is
-`track_share * 0.50` — 0.15 for packages or repositories, 0.09 for skills —
-times the 0.95 performance share (the other 0.05 is a contributor pool, dormant
-unless the owner publishes an authority hotkey).
+Below tau earns **zero**. Above tau, only the **top three** in the track enter
+the performance vector, split 0.50 / 0.30 / 0.20.
+
+At `f455ac6` the validator then applies a hard reserved share:
+
+```text
+RESERVED_HOTKEY = 5F6huno9JTAVV4pz1CTMKBdCWU7R5j57rYKqJpUXyN7mY9nH
+RESERVED_SHARE  = 0.60
+```
+
+The competitive/contributor vector is scaled to the remaining 40%, then the
+reserved hotkey receives 60%. With all four tracks scored and no eligible
+contributor recipients, the effective top-one target weights are therefore:
+
+| track | whole track after reserve | first | second | third |
+|---|---:|---:|---:|---:|
+| repositories | 0.120 | 0.060 | 0.036 | 0.024 |
+| packages | 0.120 | 0.060 | 0.036 | 0.024 |
+| mcp_servers | 0.088 | 0.044 | 0.0264 | 0.0176 |
+| skills | 0.072 | 0.036 | 0.0216 | 0.0144 |
+
+When only one track has scores, the pre-reserve performance vector is
+renormalised across that track. That is why the first completed skills round
+produced raw targets `0.60 / 0.20 / 0.12 / 0.08` for reserved / skills top
+one / top two / top three. On-chain incentive can differ because Yuma combines
+stake-weighted validator vectors, and not every validator updates at the same
+time.
+
+The pre-reserve performance share is 0.95 and the contributor pool is 0.05.
+If there are no eligible contributors, the remaining vector is normalised
+again before the reserved share is applied.
 
 There is no long tail here. Fourth place in a track earns exactly as much as an
 agent that never submitted.
