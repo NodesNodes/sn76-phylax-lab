@@ -1,0 +1,4 @@
+GitLab personal tokens use the prefix glpat- followed by twenty random characters.
+npm automation tokens use the prefix npm_ followed by thirty-six random characters.
+Hugging Face tokens use the prefix hf_ followed by high-entropy text.
+Stripe secret keys use a sk_test_ or sk_live_ prefix.

@@ -353,8 +353,49 @@ SHA-256 `56032de...`.
    добавлять только после измеримого validator delta.
 8. Перед сабмитом повторить public corpus, expanded trackcheck, rulecheck,
    fuzz, sandbox preflight и проверить SHA обоих env-вариантов.
-9. Не расходовать следующий раунд на `skills` или `repositories`: эти
-   направления не влияют на два целевых хоткея.
+9. Для уже активных packages/MCP v1 не смешивать изменения других треков с
+   ресабмитом. `skills` и `repositories` теперь имеют отдельные prepared
+   профили и развиваются только под будущие отдельные хоткеи.
+
+## Дополнение: source pass для prepared skills/repositories
+
+После подготовки `.env.skills` и `.env.repositories` пользователь отдельно
+разрешил улучшить два будущих профиля. Исторические выводы выше про
+packages/MCP сохранены; новые правила не считаются улучшением уже активных v1.
+
+Прямо использованы:
+
+- [NVIDIA SkillSpector](https://github.com/NVIDIA/SkillSpector): persistent
+  memory poisoning, HTML-comment concealment, bidi, Unicode Tags/ASCII
+  smuggling и emoji-aware benign exceptions;
+- [Trail of Bits skills](https://github.com/trailofbits/skills) и
+  [Anthropic Cybersecurity Skills](https://github.com/mukul975/Anthropic-Cybersecurity-Skills):
+  892 реальных `SKILL.md` как precision controls;
+- [Mirror-Flowers](https://github.com/Ky0toFu/Mirror-Flowers): подтверждение
+  polyglot repository-аудита для PHP, Java и JavaScript;
+- [Trivy](https://github.com/aquasecurity/trivy) и
+  [Deepfence SecretScanner](https://github.com/deepfence/SecretScanner):
+  точные provider-secret формы и необходимость сканировать не только source
+  code, но и другие committed files.
+
+Validator A/B на добавленных twins:
+
+| Проверка | Предыдущий candidate | Новый candidate |
+|---|---:|---:|
+| Skills source trackcheck | 0.0000 | 1.0000 |
+| Repositories expanded, 9 artifacts | 0.6654 | 0.8285 |
+| Polyglot malicious source/sink twin | 0.0000 | 1.0000 |
+| Polyglot benign source/sink twin | 0.182 | 0.650 |
+
+Реальный skills smoke-test не изменил ни одного решения:
+`753 ALLOW / 55 WARN / 84 BLOCK` до и после. Public corpora всех четырёх
+треков остались без регрессии; rulecheck расширен с 14 до 22 пар.
+
+Новый working SHA-256:
+`1218328472b684f6af08d8c041dde36455f6258de51257efc354aa9a5e6b0db7`.
+Он закреплён только за prepared-профилями skills/repositories. Активные
+packages/MCP v1 остаются на submitted SHA
+`3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03`.
 
 ## Submission status
 

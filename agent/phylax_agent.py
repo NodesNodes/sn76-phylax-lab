@@ -447,10 +447,74 @@ _ZERO_WIDTH = ("​", "‌", "‍", "⁠", "﻿")
 _BIDI_CONTROL = frozenset(
     chr(cp) for cp in (*range(0x202A, 0x202F), *range(0x2066, 0x206A))
 )
+_TAG_BLOCK = range(0xE0000, 0xE0080)
+# Unicode subdivision flags are the one normal use of tag characters: a black
+# flag, 2–6 lower-case/digit tags, then CANCEL TAG. SkillSpector makes the same
+# narrow carve-out so an ordinary England/Scotland/Wales emoji is not confused
+# with invisible ASCII smuggling.
+_EMOJI_TAG_SEQUENCE = re.compile(
+    "\U0001f3f4[\U000e0030-\U000e0039\U000e0061-\U000e007a]{2,6}\U000e007f"
+)
+_EMOJI_MODIFIERS = range(0x1F3FB, 0x1F400)
+_VARIATION_SELECTORS = frozenset({0xFE0E, 0xFE0F})
+
+
+def _is_emoji_base(ch: str) -> bool:
+    cp = ord(ch)
+    return (
+        0x1F000 <= cp <= 0x1FAFF
+        or 0x2600 <= cp <= 0x27BF
+        or cp in (0x00A9, 0x00AE, 0x203C, 0x2049, 0x2122, 0x2139, 0x3030, 0x303D)
+    )
+
+
+def _emoji_zwj(text: str, offset: int) -> bool:
+    if text[offset] != "\u200d":
+        return False
+    left = offset - 1
+    while left >= 0 and (
+        ord(text[left]) in _VARIATION_SELECTORS or ord(text[left]) in _EMOJI_MODIFIERS
+    ):
+        left -= 1
+    right = offset + 1
+    while right < len(text) and ord(text[right]) in _VARIATION_SELECTORS:
+        right += 1
+    if right < len(text) and ord(text[right]) in _EMOJI_MODIFIERS:
+        right += 1
+    return (
+        left >= 0 and right < len(text)
+        and _is_emoji_base(text[left]) and _is_emoji_base(text[right])
+    )
+
+
+def _hidden_unicode(text: str) -> tuple[int, str] | None:
+    """First concealed-text control that is not part of a normal emoji."""
+    safe_tags = [(m.start(), m.end()) for m in _EMOJI_TAG_SEQUENCE.finditer(text)]
+    for offset, ch in enumerate(text):
+        cp = ord(ch)
+        if ch in _BIDI_CONTROL:
+            return offset, "bidirectional text control"
+        if cp in _TAG_BLOCK and not any(start <= offset < end for start, end in safe_tags):
+            return offset, "Unicode Tag ASCII-smuggling"
+        if ch in _ZERO_WIDTH and not _emoji_zwj(text, offset):
+            return offset, "zero-width unicode"
+    return None
 
 # Context-plane patterns. Deliberately narrow: an instruction that merely tells
 # the agent to do work is not an injection. What marks one is overriding the
 # agent's own directives, concealment, or aiming at credentials.
+_MEMORY_POISON = re.compile(
+    r"(?i)(?:"
+    r"(?:store|save|persist|retain|inject|insert|embed)\s+"
+    r"(?:this|these\s+instructions?|the\s+following)[^.\n]{0,60}"
+    r"(?:in|into|to|across)\s+(?:your\s+)?(?:persistent\s+)?"
+    r"(?:memory|context|state|knowledge)"
+    r"|remember\s+(?:this|that|the\s+following)[^.\n]{0,60}"
+    r"(?:all|every|future)\s+(?:interaction|conversation|session|response)s?"
+    r"|(?:this\s+is\s+)?(?:a\s+)?(?:permanent|persistent)\s+"
+    r"(?:instruction|directive|override)"
+    r")"
+)
 _INJECTION: tuple[tuple[str, re.Pattern, float], ...] = (
     ("instruction_injection", re.compile(
         r"(?i)ignore\s+(?:all\s+|any\s+)?(?:previous|prior|above|earlier)\s+"
@@ -467,6 +531,7 @@ _INJECTION: tuple[tuple[str, re.Pattern, float], ...] = (
     ("instruction_injection", re.compile(
         r"(?i)(?:always|first|before\s+(?:answering|responding|anything|you))"
         r"[^.\n]{0,40}(?:run|execute|invoke|call)\s+[^.\n]{0,40}\.(?:py|sh|js)"), 0.50),
+    ("instruction_injection", _MEMORY_POISON, 0.60),
     ("context_injection", re.compile(
         r"(?i)\b(?:do\s+anything\s+now|developer\s+mode|jailbreak|unrestricted\s+mode)\b"), 0.55),
     ("context_injection", re.compile(
@@ -474,6 +539,10 @@ _INJECTION: tuple[tuple[str, re.Pattern, float], ...] = (
         r"(?:system\s+)?(?:prompt|instructions?)"), 0.50),
     ("context_injection", re.compile(
         r"(?i)you\s+are\s+now\s+(?:a|an|in)\b|new\s+system\s+prompt\s*[:=]"), 0.45),
+    ("context_injection", re.compile(
+        r"(?is)<!--.{0,300}(?:ignore\s+(?:all\s+)?previous|"
+        r"(?:silently|secretly|covertly)"
+        r".{0,80}(?:send|transmit|upload|post)).{0,300}-->"), 0.55),
     ("transitive_leakage", re.compile(
         r"(?i)(?:send|post|upload|exfiltrate|forward|transmit|copy)\s+[^.\n]{0,40}"
         r"(?:credential|secret|token|api[_ -]?key|password|\.env\b|id_rsa|ssh\s+key|wallet)"), 0.60),
@@ -707,14 +776,19 @@ def _scan_injection(f: _File) -> list[_Signal]:
         excerpt = " ".join(match.group(0).split())[:90]
         head = _TITLES.get(category, category.replace("_", " "))
         out.append(_Signal(
-            "INJECT_INSTRUCTION" if category != "context_injection" else "LOAD_EXTERNAL_CONTEXT",
+            ("POISON_MEMORY" if pattern is _MEMORY_POISON else
+             "INJECT_INSTRUCTION" if category != "context_injection" else
+             "LOAD_EXTERNAL_CONTEXT"),
             category, "context", f.rel, _line_of(f, pattern),
             f"{head}: {excerpt}", "HIGH", weight,
         ))
-    if any(z in f.text for z in _ZERO_WIDTH) and f.is_instruction:
+    concealed = _hidden_unicode(f.text) if f.is_instruction else None
+    if concealed is not None:
+        offset, kind = concealed
         out.append(_Signal(
-            "INJECT_INSTRUCTION", "context_injection", "context", f.rel, 1,
-            "Hidden instructions concealed with zero-width unicode", "HIGH", 0.50,
+            "INJECT_INSTRUCTION", "context_injection", "context", f.rel,
+            f.text.count("\n", 0, offset) + 1,
+            f"Hidden instructions concealed with {kind}", "HIGH", 0.55,
         ))
     return out
 
@@ -2986,12 +3060,26 @@ _VULN_RULES: tuple[tuple[re.Pattern, str, str, str, str], ...] = (
     (re.compile(r"os\.system\s*\(|subprocess\.[a-z_]+\s*\([^)]*shell\s*=\s*True|child_process\.exec\s*\("),
      "CWE-78", "OS command injection via shell execution of untrusted input", "HIGH",
      "Avoid shell=True, pass an argument list, and validate interpolated input."),
+    (re.compile(
+        r"(?i)(?:system|shell_exec|passthru|popen|proc_open|exec)\s*\("
+        r"[^)\n]*\$_(?:GET|POST|REQUEST|COOKIE)\b"),
+     "CWE-78", "PHP OS command injection from request input", "HIGH",
+     "Pass an allow-listed argument vector and never send request values to a shell."),
+    (re.compile(
+        r"(?i)Runtime\.getRuntime\s*\(\s*\)\.exec\s*\([^\n]{0,180}"
+        r"(?:request\.getParameter|args\s*\[)"),
+     "CWE-78", "Java OS command injection from request input", "HIGH",
+     "Use a fixed command and validate each argument against an allow-list."),
     (re.compile(r"\beval\s*\(|\bexec\s*\(|new\s+Function\s*\(|vm\.runInNewContext"),
      "CWE-95", "Dynamic code evaluation of untrusted input", "HIGH",
      "Remove dynamic evaluation; dispatch explicitly instead."),
     (re.compile(r"pickle\.loads?\s*\(|yaml\.load\s*\((?![^)]*Loader)|marshal\.loads\s*\("),
      "CWE-502", "Unsafe deserialization of untrusted data", "HIGH",
      "Use a safe loader (yaml.safe_load) or a non-executable format."),
+    (re.compile(
+        r"(?i)\bunserialize\s*\([^)\n]*\$_(?:GET|POST|REQUEST|COOKIE)\b"),
+     "CWE-502", "PHP unsafe deserialization of request data", "HIGH",
+     "Use JSON with schema validation instead of unserializing caller-controlled data."),
     (re.compile(r"(?i)verify\s*=\s*False|_create_unverified_context|rejectUnauthorized\s*:\s*false"),
      "CWE-295", "TLS certificate verification disabled", "MEDIUM",
      "Enable certificate verification and pin the trust store."),
@@ -3004,9 +3092,18 @@ _VULN_RULES: tuple[tuple[re.Pattern, str, str, str, str], ...] = (
     (re.compile(r"""(?i)(?:open|send_file|sendFile|readFile)\s*\([^)]*(?:\+\s*\w|%\s*\w|\.format\s*\(|\$\{|f["'])"""),
      "CWE-22", "Path traversal via unvalidated file path", "HIGH",
      "Resolve the path and confirm it stays inside the intended directory."),
+    (re.compile(
+        r"(?i)\b(?:include|require)(?:_once)?\s*(?:\(\s*)?"
+        r"[^;\n]*\$_(?:GET|POST|REQUEST|COOKIE)\b"),
+     "CWE-98", "PHP file inclusion from request-controlled path", "HIGH",
+     "Map an allow-listed identifier to a fixed local file; never include a request path."),
     (re.compile(r"(?i)\.innerHTML\s*=|dangerouslySetInnerHTML|\|\s*safe\b|document\.write\s*\("),
      "CWE-79", "Cross-site scripting via unescaped output", "HIGH",
      "Escape output by default; never render untrusted input as markup."),
+    (re.compile(
+        r"(?i)\b(?:echo|print)\s+[^;\n]*\$_(?:GET|POST|REQUEST|COOKIE)\b"),
+     "CWE-79", "PHP reflected cross-site scripting from request input", "HIGH",
+     "HTML-escape request values before rendering them."),
     # Building the *template* from input is not XSS, it is SSTI, and a benchmark
     # labels it CWE-1336. Emitting CWE-79 here matched neither the CWE nor enough
     # title tokens, so the finding was correct and scored as a miss anyway.
@@ -3050,6 +3147,12 @@ _VULN_RULES: tuple[tuple[re.Pattern, str, str, str, str], ...] = (
                 r"external[_-]general[_-]entities[\"']?\s*,\s*True"),
      "CWE-611", "XML external entity expansion enabled", "HIGH",
      "Disable entity resolution and external DTD loading in the parser."),
+    (re.compile(
+        r"(?i)(?:setExpandEntityReferences\s*\(\s*true\s*\)|"
+        r"setFeature\s*\([^\n]*(?:external-(?:general|parameter)-entities"
+        r"[^,\n]*,\s*true|disallow-doctype-decl[^,\n]*,\s*false))"),
+     "CWE-611", "Java XML parser explicitly enables external entities", "HIGH",
+     "Disable DOCTYPE declarations, external entities, and external DTD loading."),
     (re.compile(r"(?i)(?:res\.redirect|sendRedirect|\bredirect)\s*\([^,)\n]*" + _UNTRUSTED),
      "CWE-601", "Open redirect to a user-controlled location", "MEDIUM",
      "Allow only relative paths or destinations from a fixed allow-list."),
@@ -3073,25 +3176,55 @@ _VULN_RULES: tuple[tuple[re.Pattern, str, str, str, str], ...] = (
                 r"""\*\*request\.(?:json|form|args|data)\b"""),
      "CWE-915", "Mass assignment from an unfiltered request body", "MEDIUM",
      "Bind only an explicit allow-list of fields to the model."),
+    (re.compile(
+        r"(?i)\b\w+\s*\[\s*(?:req|request)\.(?:body|query|params)"
+        r"(?:\s*\[|\.)[^\]]+\]\s*="),
+     "CWE-1321", "Prototype pollution via request-controlled property name", "HIGH",
+     "Reject __proto__/constructor/prototype and use a fixed allow-list of keys."),
     (re.compile(r"(?i)(?:httponly|http_only)\s*[=:]\s*(?:False|false)|"
                 r"secure\s*[=:]\s*(?:False|false)"),
      "CWE-614", "Session cookie set without Secure/HttpOnly", "MEDIUM",
      "Set Secure and HttpOnly on every session cookie."),
+    (re.compile(
+        r"(?i)(?:token|password|secret|session[_-]?id|nonce)\s*=\s*"
+        r"(?:Math\.random\s*\(|random\.(?:random|randint|choice)\s*\(|new\s+Random\s*\()"),
+     "CWE-338", "Predictable random generator used for a security token", "MEDIUM",
+     "Use a cryptographically secure random generator for security-sensitive values."),
 )
 
 _SECRET_RULES: tuple[tuple[str, re.Pattern], ...] = (
-    ("aws_access_key_id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("aws_access_key_id", re.compile(
+        r"\b(?:A3T[A-Z0-9]|AKIA|AGPA|AIDA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}\b")),
     ("aws_secret_access_key", re.compile(r"""(?i)aws.{0,20}secret.{0,24}["'][A-Za-z0-9/+=]{40}["']""")),
     ("private_key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----")),
-    ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36}\b")),
+    ("github_token", re.compile(
+        r"(?:\b(?:ghp|gho|ghu)_[A-Za-z0-9]{36}\b|"
+        r"\bghr_[A-Za-z0-9]{76}\b|"
+        r"\bghs_[A-Za-z0-9._-]{36,}(?![A-Za-z0-9._-])|"
+        r"\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\b)")),
+    ("gitlab_token", re.compile(r"\bglpat-[A-Za-z0-9_-]{20}\b")),
+    ("huggingface_token", re.compile(r"\bhf_[A-Za-z0-9]{34,40}\b")),
     ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,48}\b")),
+    ("slack_webhook", re.compile(
+        r"https://hooks\.slack\.com/services/[A-Za-z0-9+/]{44,48}")),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
-    ("stripe_secret_key", re.compile(r"\bsk_live_[0-9A-Za-z]{24,}\b")),
+    ("stripe_secret_key", re.compile(r"\bsk_(?:test|live)_[0-9A-Za-z]{10,32}\b", re.I)),
+    ("npm_token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b", re.I)),
+    ("pypi_token", re.compile(r"\bpypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,1000}\b")),
+    ("sendgrid_token", re.compile(r"\bSG\.[A-Za-z0-9_.-]{66}\b", re.I)),
+    ("openai_api_key", re.compile(
+        r"\bsk-(?:(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,100}|"
+        r"(?:None-)?[A-Za-z0-9]{20,42})T3BlbkFJ[A-Za-z0-9_-]{20,100}\b")),
     ("generic_token", re.compile(
         r"""(?i)(?:api[_-]?key|auth[_-]?token|access[_-]?token|client[_-]?secret)\s*[=:]\s*["'][A-Za-z0-9_\-]{20,}["']""")),
 )
 
 _TEST_PATH = re.compile(r"(?:^|/)(?:tests?|spec|__tests__|fixtures?|examples?|docs?)/")
+# OpenSSH's canonical private-key filenames are strong evidence by themselves.
+# Generic `.pem`/`.key` names are not: repositories routinely commit public
+# certificates under those extensions, while an actual private key is already
+# caught by its BEGIN PRIVATE KEY marker.
+_PRIVATE_KEY_FILE = re.compile(r"^id_(?:rsa|dsa|ed25519|ecdsa)$", re.I)
 
 
 def _repository_dependencies(files: list[_File]) -> list[dict]:
@@ -3179,18 +3312,29 @@ def _analyse_repositories(files: list[_File]) -> dict:
     secrets: list[dict] = []
 
     for f in files:
-        if f.kind == "doc":
-            continue
         # Test and fixture trees carry deliberate bad patterns as regression
         # material. An audit benchmark is drawn from shipped code, so anything
         # reported out of tests/ is precision loss. Secrets are still scanned:
-        # a key committed under tests/ is still a committed key.
+        # a key committed under tests/ or in a README is still a committed key.
         in_test = bool(_TEST_PATH.search("/" + f.rel))
         for pattern, cwe, title, severity, remediation in _VULN_RULES:
-            if in_test:
+            if in_test or f.kind == "doc":
                 continue
             for i, line in enumerate(f.lines):
                 if not pattern.search(line):
+                    continue
+                # In PHP `exec()` is an OS command sink; in Java `.exec()` is a
+                # process API. They are not Python's dynamic-code `exec`.
+                if cwe == "CWE-95" and (
+                    f.suffix == ".php" and re.search(r"(?i)\bexec\s*\(", line)
+                    or f.suffix == ".java" and re.search(r"\.exec\s*\(", line)
+                ):
+                    continue
+                # A provider-shaped token belongs in the separately scored
+                # secrets dimension. Reporting the same line as a generic
+                # hardcoded credential spends vulnerability precision without
+                # adding recall.
+                if cwe == "CWE-798" and any(p.search(line) for _, p in _SECRET_RULES):
                     continue
                 vulnerabilities.append({
                     "file": f.rel,
@@ -3202,7 +3346,17 @@ def _analyse_repositories(files: list[_File]) -> dict:
                     "remediation": remediation,
                 })
                 break  # one instance per rule per file: recall, not volume
+        filename_private_key = bool(_PRIVATE_KEY_FILE.match(f.base) and f.text.strip())
+        if filename_private_key:
+            secrets.append({"file": f.rel, "line": 1, "type": "private_key", "redacted": True})
         for stype, pattern in _SECRET_RULES:
+            if stype == "private_key" and filename_private_key:
+                continue
+            # Documentation often shows a private-key header or a deliberately
+            # generic placeholder. Provider-shaped values remain high-signal
+            # everywhere, while these two loose patterns need source context.
+            if f.kind == "doc" and stype in ("private_key", "generic_token"):
+                continue
             for i, line in enumerate(f.lines):
                 if pattern.search(line):
                     secrets.append({"file": f.rel, "line": i + 1, "type": stype, "redacted": True})

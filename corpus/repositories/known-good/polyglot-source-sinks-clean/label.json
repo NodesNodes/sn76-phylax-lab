@@ -1,0 +1,15 @@
+{
+  "artifact_id": "repositories/known-good/polyglot-source-sinks-clean",
+  "track": "repositories",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "source": {
+    "origin": "Aqua Trivy / Mirror-Flowers derived twins",
+    "collected_at": "2026-07-29"
+  },
+  "notes": "Safe API and token-format twins for known-bad/polyglot-source-sinks."
+}

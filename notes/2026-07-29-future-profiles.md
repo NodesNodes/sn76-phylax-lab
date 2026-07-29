@@ -53,12 +53,26 @@ Relevant research bases include NVIDIA SkillSpector, Trail of Bits skills and
 Anthropic Cybersecurity Skills. Security-skills and ordinary Unicode remain
 benign controls rather than keyword blocks.
 
-Validation before profile creation:
+The source-driven pass added the SkillSpector forms that were still absent:
+
+- Unicode Tag/ASCII-smuggling and bidi controls in instruction-bearing files;
+- an emoji-aware exception for legitimate ZWJ and subdivision-flag sequences;
+- persistent-memory poisoning orders;
+- malicious instructions hidden inside HTML comments.
+
+The new rules were smoke-tested against all 892 `SKILL.md` files from the
+downloaded Trail of Bits and Anthropic Cybersecurity Skills trees. The verdict
+distribution stayed exactly unchanged (`753 ALLOW`, `55 WARN`, `84 BLOCK`), so
+the source pass introduced no new decisions on that real-source control set.
+
+Validation after the source-driven pass:
 
 | Corpus | Result |
 |---|---|
 | Public upstream skills, 2 artifacts | 1.0000 |
 | Expanded lab skills, 14 artifacts | 1.0000 — TP 8, TN 6, FP 0, FN 0 |
+| New SkillSpector trackcheck, 7 twins | 1.0000 — TP 4, TN 3, FP 0, FN 0 |
+| Same trackcheck on the previous candidate | 0.0000 — TP 0, TN 2, FP 1, FN 4 |
 
 This is sufficient to prepare a skills agent. It is not a held-out score
 forecast.
@@ -91,14 +105,30 @@ A new `polyglot-typosquats` artifact and its line-for-line benign manifest twin
 measure this change. Both typosquats are recovered; the benign twin produces
 no findings.
 
-Validation after the change:
+The second source pass then added:
+
+- PHP request-to-command, file-include, reflected-XSS and unserialize sinks;
+- Java request-to-process and explicit XXE-enablement sinks;
+- JavaScript request-controlled property writes and weak token randomness;
+- modern Trivy provider formats for GitHub/GitLab, npm, PyPI, Hugging Face,
+  Stripe, SendGrid and OpenAI secrets;
+- provider-token scanning in documentation while retaining narrow exceptions
+  for generic placeholders and private-key headers;
+- secret/vulnerability deduplication, so one provider token does not spend
+  precision as an unrelated generic `CWE-798`;
+- Java/PHP `.exec()` language disambiguation.
+
+Validation after both changes:
 
 | Corpus | Result |
 |---|---|
 | Public upstream repositories, 2 artifacts | 0.7600 |
-| Expanded lab repositories, 7 artifacts | 0.8295 |
+| Expanded lab repositories, 9 artifacts | 0.8285 |
 | Polyglot malicious twin | 1.0000 |
 | Polyglot benign twin | no findings; scorer artifact score 0.650 |
+| Expanded corpus on previous candidate | 0.6654 |
+| New source/sink malicious twin on previous candidate | 0.0000 |
+| New source/sink benign twin on previous candidate | 0.182 |
 
 The clean score of 0.650 is an upstream ground-truth/heuristic ceiling, not a
 false positive. Because no real repository agents have been evaluated yet,
@@ -108,19 +138,19 @@ skills.
 ## Final candidate verification
 
 Candidate SHA-256:
-`98930d3d583092174b35b455bc0a48d9194e7d6b12cf9b862cd1d5f0542228e8`.
+`1218328472b684f6af08d8c041dde36455f6258de51257efc354aa9a5e6b0db7`.
 
 | Check | Result |
 |---|---|
 | Public skills | 1.0000 |
 | Expanded skills | 1.0000 — TP 8, TN 6, FP 0, FN 0 |
 | Public repositories | 0.7600 |
-| Expanded repositories | 0.8295 — 7 artifacts |
+| Expanded repositories | 0.8285 — 9 artifacts |
 | Public packages | 1.0000 |
 | Public MCP servers | 1.0000 |
 | Expanded packages | 1.0000 — TP 17, TN 11, FP 0, FN 0 |
 | Expanded MCP servers | 1.0000 — TP 17, TN 18, FP 0, FN 0 |
-| Rulecheck | 14/14 |
+| Rulecheck | 22/22 |
 | Fuzz | 88/88 |
 | Sandbox preflight | passed on Python 3.11.15, deterministic across 3 reps |
 

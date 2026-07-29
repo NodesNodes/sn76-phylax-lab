@@ -39,6 +39,24 @@ CASES = [
                 'conn.search_s(base, scope, filt, ["cn"])'),
     ("CWE-943", 'db.users.find({"owner": request.args["u"]})',
                 'db.users.find({"query": q, "body": text})'),
+    # Mirror-Flowers' polyglot audit surface: each source-to-sink form is paired
+    # with the same API used on a fixed or escaped value.
+    ("CWE-78",  'system($_GET["cmd"]);',
+                'system("/usr/bin/id");'),
+    ("CWE-78",  'Runtime.getRuntime().exec(request.getParameter("cmd"));',
+                'new ProcessBuilder("/usr/bin/id").start();'),
+    ("CWE-502", '$obj = unserialize($_POST["blob"]);',
+                '$obj = json_decode($body, true, 32, JSON_THROW_ON_ERROR);'),
+    ("CWE-98",  'include($_GET["page"]);',
+                'include($PAGES[$page]);'),
+    ("CWE-79",  'echo $_GET["name"];',
+                'echo htmlspecialchars($name, ENT_QUOTES, "UTF-8");'),
+    ("CWE-611", 'factory.setExpandEntityReferences(true);',
+                'factory.setExpandEntityReferences(false);'),
+    ("CWE-1321", 'target[req.body.key] = req.body.value;',
+                 'target[ALLOWED_KEYS[name]] = req.body.value;'),
+    ("CWE-338", 'token = Math.random().toString(36);',
+                'token = crypto.randomBytes(32).toString("hex");'),
 ]
 
 

@@ -1,0 +1,112 @@
+{
+  "artifact_id": "repositories/known-bad/polyglot-source-sinks",
+  "track": "repositories",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 90,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "vulnerability",
+      "severity": "HIGH",
+      "cwe": "CWE-78",
+      "file": "src/commands.php",
+      "line": 2,
+      "title": "PHP OS command injection from request input"
+    },
+    {
+      "category": "vulnerability",
+      "severity": "HIGH",
+      "cwe": "CWE-98",
+      "file": "src/include.php",
+      "line": 2,
+      "title": "PHP file inclusion from request-controlled path"
+    },
+    {
+      "category": "vulnerability",
+      "severity": "HIGH",
+      "cwe": "CWE-79",
+      "file": "src/output.php",
+      "line": 2,
+      "title": "PHP reflected cross-site scripting from request input"
+    },
+    {
+      "category": "vulnerability",
+      "severity": "HIGH",
+      "cwe": "CWE-502",
+      "file": "src/deserialize.php",
+      "line": 2,
+      "title": "PHP unsafe deserialization of request data"
+    },
+    {
+      "category": "vulnerability",
+      "severity": "HIGH",
+      "cwe": "CWE-78",
+      "file": "src/Process.java",
+      "line": 3,
+      "title": "Java OS command injection from request input"
+    },
+    {
+      "category": "vulnerability",
+      "severity": "HIGH",
+      "cwe": "CWE-611",
+      "file": "src/Xml.java",
+      "line": 3,
+      "title": "Java XML parser explicitly enables external entities"
+    },
+    {
+      "category": "vulnerability",
+      "severity": "HIGH",
+      "cwe": "CWE-1321",
+      "file": "src/merge.js",
+      "line": 2,
+      "title": "Prototype pollution via request-controlled property name"
+    },
+    {
+      "category": "vulnerability",
+      "severity": "MEDIUM",
+      "cwe": "CWE-338",
+      "file": "src/token.js",
+      "line": 2,
+      "title": "Predictable random generator used for a security token"
+    },
+    {
+      "category": "secret",
+      "severity": "CRIT",
+      "type": "gitlab_token",
+      "file": "config/leaks.txt",
+      "line": 1,
+      "title": "GitLab personal access token committed to the repository"
+    },
+    {
+      "category": "secret",
+      "severity": "CRIT",
+      "type": "npm_token",
+      "file": "config/leaks.txt",
+      "line": 2,
+      "title": "npm access token committed to the repository"
+    },
+    {
+      "category": "secret",
+      "severity": "CRIT",
+      "type": "huggingface_token",
+      "file": "config/leaks.txt",
+      "line": 3,
+      "title": "Hugging Face token committed to the repository"
+    },
+    {
+      "category": "secret",
+      "severity": "CRIT",
+      "type": "stripe_secret_key",
+      "file": "config/leaks.txt",
+      "line": 4,
+      "title": "Stripe test secret committed to the repository"
+    }
+  ],
+  "source": {
+    "origin": "Aqua Trivy / Mirror-Flowers derived twins",
+    "collected_at": "2026-07-29"
+  },
+  "notes": "Polyglot source-to-sink and modern provider-token shapes, each mirrored by known-good/polyglot-source-sinks-clean."
+}

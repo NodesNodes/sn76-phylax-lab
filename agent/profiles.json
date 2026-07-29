@@ -2,7 +2,7 @@
   "code_path": "agent/phylax_agent.py",
   "entrypoint": "agent_main",
   "upstream_verified": "f455ac6",
-  "working_code_sha256": "98930d3d583092174b35b455bc0a48d9194e7d6b12cf9b862cd1d5f0542228e8",
+  "working_code_sha256": "1218328472b684f6af08d8c041dde36455f6258de51257efc354aa9a5e6b0db7",
   "active_v1_code_sha256": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03",
   "profiles": [
     {
@@ -27,7 +27,8 @@
       "template": "configs/skills.env.example",
       "label": "phylax-skills-v1",
       "state": "prepared",
-      "version": null
+      "version": null,
+      "candidate_code_sha256": "1218328472b684f6af08d8c041dde36455f6258de51257efc354aa9a5e6b0db7"
     },
     {
       "track": "repositories",
@@ -35,7 +36,8 @@
       "template": "configs/repositories.env.example",
       "label": "phylax-repositories-v1",
       "state": "prepared",
-      "version": null
+      "version": null,
+      "candidate_code_sha256": "1218328472b684f6af08d8c041dde36455f6258de51257efc354aa9a5e6b0db7"
     }
   ]
 }

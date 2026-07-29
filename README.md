@@ -34,7 +34,7 @@ scores were not available at submission time. The prepared skills/repositories
 candidate has not been registered or submitted and has working SHA-256:
 
 ```text
-98930d3d583092174b35b455bc0a48d9194e7d6b12cf9b862cd1d5f0542228e8
+1218328472b684f6af08d8c041dde36455f6258de51257efc354aa9a5e6b0db7
 ```
 
 ## Why one file serves four tracks
@@ -67,7 +67,7 @@ machine-readable profile state.
 | `agent/baseline/` | Frozen upstream reference agent used for comparisons |
 | `corpus/` | Labelled known-good and known-bad adversarial artifacts |
 | `harness/local_eval.py` | Offline runner using upstream scoring code |
-| `harness/trackcheck.py` | Expanded packages/MCP structural regression suite |
+| `harness/trackcheck.py` | Expanded skills/packages/MCP structural regression suite |
 | `harness/rulecheck.py` | Focused rule-level checks |
 | `harness/fuzz.py` | Cross-track robustness and contract fuzzing |
 | `scripts/preflight.sh` | Import, report-contract and determinism checks in the sandbox image |
