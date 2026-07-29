@@ -206,9 +206,11 @@ The complete source-by-source rationale and validator A/B history are in
 | Public MCP corpus | 1.0000 |
 | Public skills corpus | 1.0000 |
 | Expanded skills corpus | 1.0000 — TP 8, TN 6, FP 0, FN 0 |
+| Skills source trackcheck | 1.0000 — TP 13, TN 12, FP 0, FN 0 |
 | Public repositories corpus | 0.7600 |
-| Expanded repositories corpus | 0.8295 — 7 repositories |
-| Rulecheck | 14/14 |
+| Expanded repositories corpus | 0.8285 — 9 repositories |
+| Real skills precision smoke | 892 artifacts; 0 decisions changed |
+| Rulecheck | 22/22 |
 | Fuzz | 88/88 |
 | Sandbox preflight | passed on Python 3.11.15; deterministic across 3 reps |
 
@@ -220,6 +222,7 @@ For the full chronology:
 - [agent v3 scope correction](notes/2026-07-29-agent-v3.md)
 - [source research and v1 submission receipts](notes/2026-07-29-source-research.md)
 - [prepared skills and repositories profiles](notes/2026-07-29-future-profiles.md)
+- [skills second source pass](notes/2026-07-29-skills-wave2.md)
 
 ## Safety rails
 

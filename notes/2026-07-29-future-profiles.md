@@ -65,14 +65,25 @@ downloaded Trail of Bits and Anthropic Cybersecurity Skills trees. The verdict
 distribution stayed exactly unchanged (`753 ALLOW`, `55 WARN`, `84 BLOCK`), so
 the source pass introduced no new decisions on that real-source control set.
 
+A second SkillSpector pass then added narrow coverage for conversation-context
+egress, transformed system-prompt extraction, base64-hidden instructions,
+remote documents promoted to authoritative instructions, semantic constraint
+bypasses, unrestricted personas, sensitive-value reflection and direct
+execution of generated model output. The four official semantic-injection SSD
+fixtures changed from `ALLOW` to `WARN`; the clean SSD fixture stayed `ALLOW`.
+After false-positive narrowing, the same 892-skill control set again had zero
+decision changes and the identical `753 / 55 / 84` distribution.
+
 Validation after the source-driven pass:
 
 | Corpus | Result |
 |---|---|
 | Public upstream skills, 2 artifacts | 1.0000 |
 | Expanded lab skills, 14 artifacts | 1.0000 — TP 8, TN 6, FP 0, FN 0 |
-| New SkillSpector trackcheck, 7 twins | 1.0000 — TP 4, TN 3, FP 0, FN 0 |
-| Same trackcheck on the previous candidate | 0.0000 — TP 0, TN 2, FP 1, FN 4 |
+| SkillSpector source trackcheck, 25 artifacts | 1.0000 — TP 13, TN 12, FP 0, FN 0 |
+| Same trackcheck on the previous candidate | 0.3858 — TP 4, TN 12, FP 0, FN 9 |
+| Official SkillSpector SSD fixtures | 4 malicious `WARN`, clean fixture `ALLOW` |
+| Trail of Bits + Anthropic precision smoke | 892 artifacts, 0 decisions changed |
 
 This is sufficient to prepare a skills agent. It is not a held-out score
 forecast.
@@ -138,12 +149,14 @@ skills.
 ## Final candidate verification
 
 Candidate SHA-256:
-`1218328472b684f6af08d8c041dde36455f6258de51257efc354aa9a5e6b0db7`.
+`41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb`.
 
 | Check | Result |
 |---|---|
 | Public skills | 1.0000 |
 | Expanded skills | 1.0000 — TP 8, TN 6, FP 0, FN 0 |
+| Skills source trackcheck | 1.0000 — TP 13, TN 12, FP 0, FN 0 |
+| Real skills precision smoke | 892 artifacts, 0 decisions changed |
 | Public repositories | 0.7600 |
 | Expanded repositories | 0.8285 — 9 artifacts |
 | Public packages | 1.0000 |

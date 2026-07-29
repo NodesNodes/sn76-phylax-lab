@@ -397,6 +397,31 @@ Validator A/B на добавленных twins:
 packages/MCP v1 остаются на submitted SHA
 `3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03`.
 
+## Второй source pass по skills
+
+Повторное чтение правил и официальных SSD fixtures NVIDIA SkillSpector
+подтвердило ещё девять false-negative форм: conversation-context egress,
+трансформированное извлечение system prompt, base64-hidden instructions,
+remote authoritative instructions, semantic constraint demotion,
+unrestricted persona, privileged-mode narrative, sensitive-value reflection и
+прямое выполнение model output.
+
+Старый кандидат на расширенном skills trackcheck получил `0.3858`
+(`TP 4 / TN 12 / FN 9`), новый — `1.0000`
+(`TP 13 / TN 12 / FN 0`). Четыре malicious SSD fixture изменились с `ALLOW`
+на `WARN`, официальный clean fixture остался `ALLOW`.
+
+Первый вариант sensitive-reflection правила изменял решения четырёх честных
+security-skills и был отклонён. После сужения до явного `echo/repeat back` или
+включения секретов в каждый ответ полный smoke на 892 реальных skills снова
+дал нулевой delta и прежнее распределение
+`753 ALLOW / 55 WARN / 84 BLOCK`.
+
+Итоговый working SHA-256:
+`41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb`.
+Подробный журнал и список намеренно исключённых широких направлений:
+[2026-07-29-skills-wave2.md](2026-07-29-skills-wave2.md).
+
 ## Submission status
 
 Оба агента отправлены 2026-07-29 с одинаковым кодом, SHA-256

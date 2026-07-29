@@ -435,6 +435,12 @@ _OBFUSCATION = re.compile(
     r"Buffer\.from\s*\([^,\n]+,\s*[\"']base64[\"']|"
     r"(?:powershell|pwsh)\b[^\n]{0,80}-(?:enc|encodedcommand)\b|"
     r"(?:\\x[0-9a-f]{2}){4,}")
+_MODEL_OUTPUT_EXEC = re.compile(
+    r"(?i)\b(?:eval|exec|os\.system|subprocess\.(?:run|call|Popen))\s*\(\s*"
+    r"(?:response|output|result|completion|generated(?:_|\s)?"
+    r"(?:code|text|output)|model_(?:response|output|result))"
+    r"(?:\.(?:text|content))?\s*(?:,|\))"
+)
 _CURL_PIPE = re.compile(r"(?:curl|wget)\s+[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z)?sh")
 _REVERSE_SHELL = re.compile(
     r"(?i)(?:/(?:dev/)?tcp/|bash\s+-i\b|nc\s+(?:-[A-Za-z]*e|--exec)\b|"
@@ -515,6 +521,57 @@ _MEMORY_POISON = re.compile(
     r"(?:instruction|directive|override)"
     r")"
 )
+_CONTEXT_EXFIL = re.compile(
+    r"(?i)(?:send|transmit|upload|post|forward|export|dump)\s+"
+    r"(?:the\s+)?(?:(?:full|entire|complete)\s+)?"
+    r"(?:conversation|chat|dialog(?:ue)?|session)\s*"
+    r"(?:history|context|messages?|state|memory)?"
+    r"[^.\n]{0,60}(?:to|into|via)\s+(?:an?\s+|the\s+)?"
+    r"(?:external|remote|third[- ]party|https?://)"
+)
+_PROMPT_TRANSFORM = re.compile(
+    r"(?i)(?:(?:before\s+(?:answering|responding|anything)|first|always)"
+    r"[^.\n]{0,45})?"
+    r"(?:encode|base64(?:-encode)?|reverse|translate|paraphrase|summari[sz]e|"
+    r"rephrase|format)\s+[^.\n]{0,35}"
+    r"(?:your|the)\s+(?:full\s+)?(?:system\s+)?"
+    r"(?:prompt|instructions?|rules?|guidelines?)"
+    r"[^.\n]{0,45}(?:return|output|display|echo|send|include)\b"
+)
+_REMOTE_INSTRUCTIONS = re.compile(
+    r"(?i)(?:download|fetch|load|retrieve|read)\s+(?:from\s+)?"
+    r"https?://\S+[^.\n]{0,90}"
+    r"(?:follow|obey|execute|apply|adopt|treat)\s+(?:all\s+)?(?:the\s+)?"
+    r"(?:instructions?|rules?|orders?|directives?)"
+)
+_SEMANTIC_BYPASS = re.compile(
+    r"(?is)(?:"
+    r"set\s+aside\s+(?:its|your|the)\s+(?:usual|normal|existing)\s+"
+    r"(?:constraints?|guidelines?|restrictions?)"
+    r"|previous\s+operational\s+guidelines?[\s\S]{0,90}"
+    r"(?:suggestions?\s+rather\s+than\s+requirements?|not\s+requirements?)"
+    r"|privileged\s+mode[\s\S]{0,90}normal\s+restrictions?\s+do\s+not\s+apply"
+    r")"
+)
+_PERSONA_BYPASS = re.compile(
+    r"(?is)(?:assistant|agent)[\s\S]{0,100}"
+    r"(?:takes?\s+on|adopts?|assumes?)\s+(?:the\s+)?"
+    r"(?:persona|role)[\s\S]{0,180}"
+    r"(?:trained|operates?|exists?)[\s\S]{0,70}"
+    r"without\s+(?:content\s+)?restrictions?"
+)
+_SENSITIVE_REFLECTION = re.compile(
+    r"(?i)(?:"
+    r"(?<!avoid )(?<!never )(?<!don't )(?<!do not )"
+    r"\b(?:echo(?:ing)?|repeat(?:ing)?)\s+back\s+(?:any\s+|all\s+)?"
+    r"[^.\n]{0,35}(?:credentials?|passwords?|api[_ -]?keys?|"
+    r"authentication\s+tokens?|sensitive\s+(?:values?|data|information))"
+    r"|(?:include|append)\s+(?:all\s+|any\s+)?[^.\n]{0,45}"
+    r"(?:credentials?|passwords?|api[_ -]?keys?|authentication\s+tokens?|"
+    r"sensitive\s+(?:values?|data|information))[^.\n]{0,50}"
+    r"(?:in|to|at\s+the\s+end\s+of)\s+every\s+(?:response|reply)"
+    r")"
+)
 _INJECTION: tuple[tuple[str, re.Pattern, float], ...] = (
     ("instruction_injection", re.compile(
         r"(?i)ignore\s+(?:all\s+|any\s+)?(?:previous|prior|above|earlier)\s+"
@@ -532,11 +589,15 @@ _INJECTION: tuple[tuple[str, re.Pattern, float], ...] = (
         r"(?i)(?:always|first|before\s+(?:answering|responding|anything|you))"
         r"[^.\n]{0,40}(?:run|execute|invoke|call)\s+[^.\n]{0,40}\.(?:py|sh|js)"), 0.50),
     ("instruction_injection", _MEMORY_POISON, 0.60),
+    ("instruction_injection", _SEMANTIC_BYPASS, 0.60),
     ("context_injection", re.compile(
         r"(?i)\b(?:do\s+anything\s+now|developer\s+mode|jailbreak|unrestricted\s+mode)\b"), 0.55),
     ("context_injection", re.compile(
         r"(?i)(?:reveal|print|show|leak|repeat)\s+(?:your|the)\s+(?:full\s+)?"
         r"(?:system\s+)?(?:prompt|instructions?)"), 0.50),
+    ("context_injection", _PROMPT_TRANSFORM, 0.55),
+    ("context_injection", _REMOTE_INSTRUCTIONS, 0.60),
+    ("context_injection", _PERSONA_BYPASS, 0.60),
     ("context_injection", re.compile(
         r"(?i)you\s+are\s+now\s+(?:a|an|in)\b|new\s+system\s+prompt\s*[:=]"), 0.45),
     ("context_injection", re.compile(
@@ -549,7 +610,26 @@ _INJECTION: tuple[tuple[str, re.Pattern, float], ...] = (
     ("transitive_leakage", re.compile(
         r"(?i)(?:credential|secret|token|api[_ -]?key|password|\.env\b|id_rsa|~/\.aws|~/\.ssh)"
         r"[^.\n]{0,60}(?:to\s+)?https?://"), 0.60),
+    ("transitive_leakage", _CONTEXT_EXFIL, 0.60),
+    ("transitive_leakage", _SENSITIVE_REFLECTION, 0.60),
 )
+_ENCODED_TEXT = re.compile(
+    r"(?<![A-Za-z0-9+/])(?:[A-Za-z0-9+/]{4}){12,}"
+    r"(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?(?![A-Za-z0-9+/=])"
+)
+
+
+def _decoded_injection(text: str) -> tuple[int, str] | None:
+    """First long base64 run that decodes to an actual injected instruction."""
+    for match in _ENCODED_TEXT.finditer(text):
+        raw = match.group(0)
+        with contextlib.suppress(ValueError, UnicodeDecodeError):
+            decoded = base64.b64decode(
+                raw + "=" * (-len(raw) % 4), validate=True
+            ).decode()
+            if any(pattern.search(decoded) for _, pattern, _ in _INJECTION):
+                return match.start(), " ".join(decoded.split())[:90]
+    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -782,6 +862,15 @@ def _scan_injection(f: _File) -> list[_Signal]:
             category, "context", f.rel, _line_of(f, pattern),
             f"{head}: {excerpt}", "HIGH", weight,
         ))
+    encoded = _decoded_injection(f.text)
+    if encoded is not None and "context_injection" not in seen:
+        offset, excerpt = encoded
+        out.append(_Signal(
+            "LOAD_EXTERNAL_CONTEXT", "context_injection", "context", f.rel,
+            f.text.count("\n", 0, offset) + 1,
+            "Base64 payload decodes to injected instructions: " + excerpt,
+            "HIGH", 0.60,
+        ))
     concealed = _hidden_unicode(f.text) if f.is_instruction else None
     if concealed is not None:
         offset, kind = concealed
@@ -923,6 +1012,17 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
                 _line_of(f, _OBFUSCATION),
                 "Obfuscated payload decoded and executed at runtime", "CRIT", 0.80,
             ))
+        # LLM output is untrusted input. Passing it directly to an execution
+        # sink is arbitrary code execution even when no encoding or shell
+        # concealment is involved.
+        if f.kind == "code" and _MODEL_OUTPUT_EXEC.search(f.text):
+            risk = max(risk, 0.80)
+            signals.append(_Signal(
+                "EXECUTE_SOURCE_CODE", "transitive_poisoning", "action", f.rel,
+                _line_of(f, _MODEL_OUTPUT_EXEC),
+                "Generated model output is executed without validation",
+                "CRIT", 0.80,
+            ))
 
     # The chain does not have to close inside one file. A bundle that reads the
     # environment in one script and posts in another is the same attack with an
@@ -991,8 +1091,8 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
                 signals.append(_Signal(
                     "INJECT_INSTRUCTION", "instruction_injection", "context", f.rel,
                     _line_of(f, re.compile(re.escape(hit[0].rsplit("/", 1)[-1]))),
-                    "Skill instructs the agent to run a bundled script that "
-                    "exfiltrates credentials: " + ", ".join(hit),
+                    "Skill instructs the agent to run a bundled unsafe script: "
+                    + ", ".join(hit),
                     "HIGH", 0.85,
                 ))
 
@@ -1050,9 +1150,6 @@ _TOOL_EXFIL = re.compile(
     r"|(?:read|fetch|load|open|cat)[^\n]{0,60}"
     r"(?:~/\.ssh|id_rsa|\.env\b|credential|secret|token|api[_ -]?key|password)"
     r"[^\n]{0,90}(?:include|attach|append|send|post|upload|return|paste|put)\b")
-_ENCODED_TEXT = re.compile(r"(?:[A-Za-z0-9+/]{4}){12,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
-
-
 def _metadata_poisoned(text: str) -> bool:
     """Visible or concealed instructions in model-facing MCP metadata."""
     if any(pat.search(text) for _, pat, _ in _INJECTION) or _TOOL_EXFIL.search(text):
