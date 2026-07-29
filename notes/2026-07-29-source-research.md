@@ -424,7 +424,7 @@ security-skills и был отклонён. После сужения до яв�
 
 ## Submission status
 
-Оба агента отправлены 2026-07-29 с одинаковым кодом, SHA-256
+Первые два агента отправлены 2026-07-29 с одинаковым кодом, SHA-256
 `3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03`:
 
 | env | хоткей | SS58 | трек | имя | version | status | agent ID |
@@ -435,6 +435,16 @@ security-skills и был отклонён. После сужения до яв�
 Оба запроса `/v1/specialization/register` и `/v1/specialization/agent`
 вернули `200 OK`. Фактический held-out score пока неизвестен.
 
+Третий профиль `skills` отправлен позже тем же днём после второго source pass:
+
+| env | хоткей | SS58 | UID | трек | имя | version | status | agent ID |
+|---|---|---|---:|---|---|---:|---|---|
+| `.env.skills` | `sn76_2` | `5G483fsyFaTmy8VGbhMAMWLBwvNCkPFxk1VVDgHrkdCUyb5M` | 246 | `skills` | `phylax-skills-v1` | 1 | active, pending | `7ac152758be44ad2b20530dc52dbd101` |
+
+Skills upload принят с SHA-256
+`41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb`;
+оба endpoint также вернули `200 OK`.
+
 ### Имена и env
 
 Имена задаются через `PHYLAX_MINER_LABEL`:
@@ -442,15 +452,17 @@ security-skills и был отклонён. После сужения до яв�
 ```text
 .env:     PHYLAX_MINER_LABEL=phylax-packages-v1
 .env.mcp: PHYLAX_MINER_LABEL=phylax-mcp-v1
+.env.skills: PHYLAX_MINER_LABEL=phylax-skills-v1
 ```
 
-`sn76` и `sn76_1` — локальные имена wallet hotkeys, а не публичные имена
-агентов. `phylax_agent.py` — имя загружаемого файла. В API публичное поле
-`name` получает именно значение `PHYLAX_MINER_LABEL`.
+`sn76`, `sn76_1` и `sn76_2` — локальные имена wallet hotkeys, а не публичные
+имена агентов. `phylax_agent.py` — имя загружаемого файла. В API публичное
+поле `name` получает именно значение `PHYLAX_MINER_LABEL`.
 
 ### Execution API key
 
-Ключ намеренно сохранён в обоих env-файлах. Официальный
+Один и тот же ключ намеренно сохранён во всех четырёх gitignored env-файлах;
+их права установлены `0600`. Официальный
 `scripts/register_miner.py`:
 
 1. требует непустой `PHYLAX_EXECUTION_API_KEY`;
@@ -460,7 +472,8 @@ security-skills и был отклонён. После сужения до яв�
    `/v1/specialization/agent`.
 
 Поэтому вариант сабмита без ключа не использовался и ключ из env не удалялся.
-Само секретное значение в заметку не копируется.
+Агенты детерминированы и inference API не вызывают, но официальный client всё
+равно требует это поле. Само секретное значение в заметку не копируется.
 
 ### Команды
 
@@ -477,17 +490,24 @@ env PHYLAX_ENV_FILE=/root/labs/sn76-phylax-lab/.env.mcp \
   bash scripts/submit.sh -y
 ```
 
-`PHYLAX_ENV_FILE` нужен только второму вызову: без него `submit.sh` по
-умолчанию читает `.env` и повторно отправил бы packages-вариант.
+Skills:
+
+```bash
+env PHYLAX_ENV_FILE=/root/labs/sn76-phylax-lab/.env.skills \
+  bash scripts/submit.sh -y
+```
+
+`PHYLAX_ENV_FILE` нужен вызовам не из `.env`: без него `submit.sh` по
+умолчанию читает packages-профиль.
 
 ### Preflight перед отправкой
 
-Оба запуска `submit.sh` независимо выполнили sandbox preflight:
+Все три запуска `submit.sh` независимо выполнили sandbox preflight:
 
 - sandbox Python 3.11.15 импортировал агент;
 - `agent_main` вернул валидный report;
 - результат был детерминирован в трёх повторениях;
-- оба preflight завершились `passed`.
+- все preflight завершились `passed`.
 
 На отправку ушёл один и тот же файл `agent/phylax_agent.py`: 150193 байта на
 диске, entrypoint `agent_main`. Сервер для обоих вариантов подтвердил один
@@ -515,6 +535,16 @@ MCP servers:
 - inference model: пустое значение;
 - agent version: 1;
 - status: `active`.
+
+Skills:
+
+- registration label: `phylax-skills-v1`;
+- registration created/updated at: `2026-07-29T08:38:50.954647Z`;
+- agent created at: `2026-07-29T08:38:51.512782`;
+- inference provider: `openrouter`;
+- inference model: пустое значение;
+- agent version: 1;
+- status: `active`, evaluation `pending`, runs `0`.
 
 `active` означает, что сервер принял и активировал загруженную версию. Это не
 означает, что held-out evaluation уже завершена.

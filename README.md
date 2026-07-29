@@ -14,7 +14,7 @@ change. The upstream subnet checkout remains read-only and lives separately at
 |---|---|---|---:|---|
 | `packages` | `sn76` | `phylax-packages-v1` | 1 | active |
 | `mcp_servers` | `sn76_1` | `phylax-mcp-v1` | 1 | active |
-| `skills` | not created | `phylax-skills-v1` | — | prepared |
+| `skills` | `sn76_2` | `phylax-skills-v1` | 1 | active, pending evaluation |
 | `repositories` | not created | `phylax-repositories-v1` | — | prepared |
 
 All profiles use the same file and entrypoint:
@@ -29,13 +29,15 @@ Active packages/MCP v1 SHA-256:
 3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03
 ```
 
-The server accepted both v1 uploads on 2026-07-29. Their held-out evaluation
-scores were not available at submission time. The prepared skills/repositories
-candidate has not been registered or submitted and has working SHA-256:
+Active skills v1 and the prepared repositories candidate use SHA-256:
 
 ```text
-1218328472b684f6af08d8c041dde36455f6258de51257efc354aa9a5e6b0db7
+41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb
 ```
+
+The server accepted all three active v1 uploads on 2026-07-29. Their held-out
+evaluation scores were not available at submission time. Repositories remains
+the only prepared, unsubmitted profile.
 
 ## Why one file serves four tracks
 
@@ -88,7 +90,7 @@ cp .env.example .env
 cp .env.example .env.mcp
 ```
 
-The two future profiles have dedicated safe templates:
+The skills and repositories profiles have dedicated safe templates:
 
 ```bash
 cp configs/skills.env.example .env.skills
@@ -99,7 +101,7 @@ cp configs/repositories.env.example .env.repositories
 |---|---|---|---|
 | `.env` | packages | `phylax-packages-v1` | `sn76` |
 | `.env.mcp` | mcp_servers | `phylax-mcp-v1` | `sn76_1` |
-| `.env.skills` | skills | `phylax-skills-v1` | fill after creation |
+| `.env.skills` | skills | `phylax-skills-v1` | `sn76_2` |
 | `.env.repositories` | repositories | `phylax-repositories-v1` | fill after creation |
 
 `PHYLAX_EXECUTION_API_KEY` is required by the official registration client and
@@ -221,7 +223,7 @@ For the full chronology:
 - [agent v2 and jail findings](notes/2026-07-28-agent-v2.md)
 - [agent v3 scope correction](notes/2026-07-29-agent-v3.md)
 - [source research and v1 submission receipts](notes/2026-07-29-source-research.md)
-- [prepared skills and repositories profiles](notes/2026-07-29-future-profiles.md)
+- [skills and repositories profiles](notes/2026-07-29-future-profiles.md)
 - [skills second source pass](notes/2026-07-29-skills-wave2.md)
 
 ## Safety rails

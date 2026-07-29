@@ -1,13 +1,13 @@
-# 2026-07-29 — prepared skills and repositories profiles
+# 2026-07-29 — skills and repositories profiles
 
 ## Decision
 
-Two additional agents are prepared but deliberately not registered or
-submitted:
+Two additional profiles were prepared. Skills was subsequently assigned
+`sn76_2` and submitted; repositories remains deliberately unsubmitted:
 
 | Track | Local env | Safe template | Planned label | State |
 |---|---|---|---|---|
-| skills | `.env.skills` | `configs/skills.env.example` | `phylax-skills-v1` | prepared |
+| skills | `.env.skills` | `configs/skills.env.example` | `phylax-skills-v1` | active v1 |
 | repositories | `.env.repositories` | `configs/repositories.env.example` | `phylax-repositories-v1` | prepared |
 
 Both profiles use `agent/phylax_agent.py` and entrypoint `agent_main`. Separate
@@ -15,9 +15,9 @@ copies of the Python file were rejected as a design: the validator uploads one
 code file, `context.track` already selects the analyzer, and duplicated
 150-KB sources would drift after the first fix.
 
-The local env files have blank `WALLET_HOTKEY` and
-`PHYLAX_EXECUTION_API_KEY`. They are ignored by Git. The tracked templates
-contain no secrets.
+The local env files are ignored by Git and the tracked templates contain no
+secrets. `.env.skills` now uses `sn76_2`; `.env.repositories` still has a blank
+`WALLET_HOTKEY`.
 
 ## Production information available
 
@@ -173,15 +173,17 @@ submission SHA. No existing agent was resubmitted during this work.
 ## Safety gates
 
 `scripts/submit.sh` and `scripts/status.sh` now reject profiles with an empty
-`WALLET_HOTKEY`. This prevents either blank template from falling back to an
+`WALLET_HOTKEY`. This prevents a blank template from falling back to an
 existing wallet or being submitted accidentally.
 
-No registration, on-chain action or Phylax API submission was performed for
-these two profiles.
+That gate remained effective: repositories is still unsubmitted. Skills was
+submitted only after `sn76_2` existed, was registered on SN76 as UID 246, and
+the user explicitly approved the action. Both API calls returned `200 OK`;
+agent version 1 is active and pending evaluation.
 
-## When hotkeys exist
+## When the repositories hotkey exists
 
-For each track:
+For repositories:
 
 1. fill its dedicated `WALLET_HOTKEY`;
 2. fill `PHYLAX_EXECUTION_API_KEY`;

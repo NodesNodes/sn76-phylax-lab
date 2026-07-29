@@ -2,16 +2,37 @@
 
 ## Статус
 
-Улучшен prepared-профиль `phylax-skills-v1`. Он по-прежнему не
-зарегистрирован и не отправлен: у `.env.skills` нет hotkey и execution API
-key. Активные `phylax-packages-v1` и `phylax-mcp-v1` не пересабмичены и
-остаются на SHA-256
+Профиль `phylax-skills-v1` сначала был подготовлен без hotkey, затем
+2026-07-29 в 08:38 UTC назначен hotkey `sn76_2` и выполнен v1 submit.
+Активные `phylax-packages-v1` и `phylax-mcp-v1` не пересабмичены и остаются
+на SHA-256
 `3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03`.
 
 Новый общий working SHA-256:
 `41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb`.
-Из-за единого файла этот SHA записан для обоих prepared-профилей — `skills` и
+Из-за единого файла этот SHA используется активным `skills` и подготовленным
 `repositories`, хотя функциональные изменения относятся к ветке `skills`.
+
+### Submission receipt
+
+| Поле | Значение |
+|---|---|
+| wallet hotkey | `default/sn76_2` |
+| SS58 | `5G483fsyFaTmy8VGbhMAMWLBwvNCkPFxk1VVDgHrkdCUyb5M` |
+| SN76 UID | `246` |
+| on-chain registration | block `8726470` |
+| track / label | `skills` / `phylax-skills-v1` |
+| agent version | `1` |
+| agent ID | `7ac152758be44ad2b20530dc52dbd101` |
+| server status | `active`, evaluation `pending`, runs `0` |
+| code SHA-256 | `41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb` |
+
+`/v1/specialization/register` и `/v1/specialization/agent` вернули `200 OK`.
+Перед отправкой официальный Python 3.11 sandbox preflight прошёл полностью.
+Один существующий execution API key синхронизирован во всех четырёх
+gitignored `.env*`; значения не записаны в Git, права файлов установлены
+`0600`. У `.env.repositories` по-прежнему нет hotkey, поэтому repositories не
+отправлялся.
 
 ## Основание
 

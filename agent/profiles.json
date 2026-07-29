@@ -3,7 +3,11 @@
   "entrypoint": "agent_main",
   "upstream_verified": "f455ac6",
   "working_code_sha256": "41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb",
-  "active_v1_code_sha256": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03",
+  "active_code_sha256_by_track": {
+    "packages": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03",
+    "mcp_servers": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03",
+    "skills": "41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb"
+  },
   "profiles": [
     {
       "track": "packages",
@@ -26,9 +30,12 @@
       "env": ".env.skills",
       "template": "configs/skills.env.example",
       "label": "phylax-skills-v1",
-      "state": "prepared",
-      "version": null,
-      "candidate_code_sha256": "41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb"
+      "wallet_hotkey": "sn76_2",
+      "hotkey": "5G483fsyFaTmy8VGbhMAMWLBwvNCkPFxk1VVDgHrkdCUyb5M",
+      "state": "active",
+      "version": 1,
+      "agent_id": "7ac152758be44ad2b20530dc52dbd101",
+      "submitted_code_sha256": "41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb"
     },
     {
       "track": "repositories",
