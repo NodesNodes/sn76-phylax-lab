@@ -1,0 +1,15 @@
+{
+  "artifact_id": "skills/known-good/noext-helper",
+  "track": "skills",
+  "ground_truth": {
+    "verdict": "ALLOW",
+    "risk_score": 5,
+    "classification": "safe"
+  },
+  "expected_findings": [],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "Same shape \u2014 extension-less script named by the instructions \u2014 doing nothing but reformatting stdin. Treating unnamed files as code must not make an ordinary helper a finding."
+}

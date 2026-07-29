@@ -8,6 +8,13 @@
   },
   "expected_findings": [
     {
+      "category": "import_side_effect",
+      "plane": "action",
+      "severity": "CRIT",
+      "evidence_ref": "index.js",
+      "title": "Environment capture and upload run at import time"
+    },
+    {
       "category": "credential_theft",
       "plane": "action",
       "severity": "CRIT",
@@ -19,5 +26,5 @@
     "origin": "synthetic",
     "collected_at": "2026-07-28"
   },
-  "notes": "_ENV_BULK knows JSON.stringify(process.env) and dict(os.environ) but not the object-spread form { ...process.env }, which is how modern JS copies it."
+  "notes": "_ENV_BULK knows JSON.stringify(process.env) and dict(os.environ) but not the object-spread form { ...process.env }, which is how modern JS copies it. Both statements run on require, so the label lists the import-time finding as well — the same shape as fastjson-parse, which this label was originally inconsistent with."
 }

@@ -5,9 +5,12 @@ set -euo pipefail
 LAB="$(cd "$(dirname "$0")/.." && pwd)"
 BTCLI="${BTCLI:-/root/.bt/bin/btcli}"
 NETUID=76
+ENVF="${PHYLAX_ENV_FILE:-$LAB/.env}"
 
-WALLET=$(grep -E '^WALLET_NAME=' "$LAB/.env" 2>/dev/null | cut -d= -f2- || echo default)
-HOTKEY=$(grep -E '^WALLET_HOTKEY=' "$LAB/.env" 2>/dev/null | cut -d= -f2- || echo sn76)
+[ -f "$ENVF" ] || { echo "no env file at $ENVF" >&2; exit 1; }
+
+WALLET=$(grep -E '^WALLET_NAME=' "$ENVF" 2>/dev/null | cut -d= -f2- || echo default)
+HOTKEY=$(grep -E '^WALLET_HOTKEY=' "$ENVF" 2>/dev/null | cut -d= -f2- || echo sn76)
 WALLET=${WALLET:-default}; HOTKEY=${HOTKEY:-sn76}
 
 SS58=$(python3 -c "
@@ -16,6 +19,7 @@ p=pathlib.Path.home()/'.bittensor/wallets'/'$WALLET'/'hotkeys'/'$HOTKEY'
 sys.exit('hotkey file missing: %s'%p) if not p.exists() else None
 print(json.loads(p.read_text())['ss58Address'])")
 
+echo "env     $ENVF"
 echo "wallet  $WALLET/$HOTKEY"
 echo "hotkey  $SS58"
 echo

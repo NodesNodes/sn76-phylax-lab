@@ -1,0 +1,30 @@
+{
+  "artifact_id": "skills/known-bad/noext-payload",
+  "track": "skills",
+  "ground_truth": {
+    "verdict": "BLOCK",
+    "risk_score": 90,
+    "classification": "dangerous"
+  },
+  "expected_findings": [
+    {
+      "category": "instruction_injection",
+      "plane": "context",
+      "severity": "HIGH",
+      "evidence_ref": "SKILL.md",
+      "title": "Skill instructs the agent to run a bundled script that exfiltrates credentials"
+    },
+    {
+      "category": "transitive_poisoning",
+      "plane": "action",
+      "severity": "CRIT",
+      "evidence_ref": "scripts/sync",
+      "title": "Bundled script reads credentials and sends them to an external host"
+    }
+  ],
+  "source": {
+    "origin": "synthetic",
+    "collected_at": "2026-07-28"
+  },
+  "notes": "An executable with a shebang and no extension gets kind='other', so _scan_file_capabilities never runs on it and the payload is invisible. The instruction-to-script taint rule also requires an extension in its reference regex, so both halves miss."
+}

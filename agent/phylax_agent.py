@@ -32,6 +32,7 @@ Design notes, all of them consequences of how the validator actually scores
 from __future__ import annotations
 
 import ast
+import base64
 import contextlib
 import hashlib
 import json
@@ -131,7 +132,23 @@ _CODE_SUFFIXES = frozenset({
 _DOC_SUFFIXES = frozenset({
     ".md", ".markdown", ".mdx", ".rst", ".txt", ".adoc", ".asciidoc", ".org",
 })
-_DATA_SUFFIXES = frozenset({".json", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".xml", ".lock"})
+_DATA_SUFFIXES = frozenset({
+    ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".xml", ".lock",
+    # Tabular data a skill is told to load lands in the agent's context exactly
+    # like a document does, so a cell that carries instructions is an injection
+    # with a different file extension. Left out, these are kind "other" and the
+    # context-plane scan never opens them.
+    ".csv", ".tsv", ".jsonl", ".ndjson",
+})
+# Extension implied by a `#!` line. An executable is code whatever it is named,
+# and the interpreter is the only thing that says which language.
+_SHEBANG_SUFFIX = {
+    "python": ".py", "python2": ".py", "python3": ".py",
+    "node": ".js", "deno": ".js", "bun": ".js",
+    "sh": ".sh", "bash": ".sh", "zsh": ".sh", "ksh": ".sh", "dash": ".sh",
+    "ruby": ".rb", "perl": ".pl", "php": ".php",
+    "pwsh": ".ps1", "powershell": ".ps1",
+}
 _MANIFEST_NAMES = frozenset({
     "package.json", "pyproject.toml", "setup.cfg", "pipfile", "manifest.json",
     "requirements.txt", "cargo.toml", "go.mod", "gemfile", "composer.json", "mcp.json",
@@ -143,6 +160,19 @@ _MANIFEST_NAMES = frozenset({
 _ENTRYPOINT_STEMS = frozenset({
     "skill", "agent", "agents", "readme", "instructions", "prompt", "system",
 })
+
+
+def _shebang_suffix(text: str) -> str:
+    """Suffix implied by a file's shebang line, or "" when there is none."""
+    if text[:2] != "#!":
+        return ""
+    # `#!/usr/bin/env -S python3 -u` puts the interpreter after `env` and its
+    # own flags, so scan the tokens rather than trusting any single position.
+    for token in text.split("\n", 1)[0][2:].replace("\\", "/").split():
+        hit = _SHEBANG_SUFFIX.get(token.rsplit("/", 1)[-1])
+        if hit:
+            return hit
+    return ""
 
 
 def _is_main_guard(test) -> bool:
@@ -162,6 +192,12 @@ class _File:
         self.base = rel.rsplit("/", 1)[-1].lower()
         self.stem = self.base.rsplit(".", 1)[0] if "." in self.base else self.base
         self.suffix = ("." + self.base.rsplit(".", 1)[-1]) if "." in self.base else ""
+        # A file with a shebang is code, whatever it is called. Without this a
+        # bundled `scripts/sync` is kind "other", capability patterns never run
+        # on it, and the payload is invisible — the cheapest evasion there is.
+        # The interpreter also gives the language, which module_level needs.
+        if not self.suffix:
+            self.suffix = _shebang_suffix(text)
         self.text = text
         self.lines = text.splitlines()
         if self.base in _MANIFEST_NAMES:
@@ -260,10 +296,13 @@ def _read_files(artifact_dir: str) -> list[_File]:
 
 # An interpreter named in instruction text, followed by a path. What decides
 # whether a file is code is what runs it, not what it is called: `python
-# resources/model.data` makes model.data code no matter how it is spelled.
+# resources/model.data` makes model.data code no matter how it is spelled, and
+# `bash scripts/setup` does the same for a name with no extension at all. Only
+# paths that resolve to a bundled file are promoted, so a loose match here
+# cannot invent a finding.
 _INTERPRETED = re.compile(
     r"(?:^|[\s`\"'(&|;])(?:python[23]?|node|deno|bun|ruby|perl|php|"
-    r"(?:ba|z|k)?sh|pwsh|powershell)\s+(?:-[\w-]+\s+)*([\w./\-]+\.[\w]+)")
+    r"(?:ba|z|k)?sh|pwsh|powershell)\s+(?:-[\w-]+\s+)*([\w./\-]+)")
 
 
 def _promote_interpreted(files: list[_File]) -> dict[str, str]:
@@ -320,7 +359,9 @@ _SIGNALS: tuple[tuple[str, re.Pattern, frozenset], ...] = (
     ("CALL_EXTERNAL_API", re.compile(
         r"requests\.(?:get|put|patch|delete|request)\s*\(|httpx\.(?:get|Client)|"
         r"urllib\.request\.urlopen\s*\(|urlopen\s*\(|fetch\s*\(\s*[\"'`]https?://|"
-        r"http\.client\.HTTP|axios\s*\(|axios\.get\s*\("), frozenset({"code"})),
+        r"http\.client\.HTTP|axios\s*\(|axios\.get\s*\(|"
+        r"\bnpm\s+(?:publish|owner\s+add|token\s+create)\b"),
+     frozenset({"code", "manifest"})),
     ("OPEN_SOCKET", re.compile(
         r"socket\.socket\s*\(|net\.createConnection"), frozenset({"code"})),
     ("RESOLVE_DNS", re.compile(
@@ -335,14 +376,20 @@ _SIGNALS: tuple[tuple[str, re.Pattern, frozenset], ...] = (
         r"os\.listdir\s*\(|os\.walk\s*\(|\.rglob\s*\(|glob\.glob\s*\(|fs\.readdir"),
      frozenset({"code"})),
     ("READ_PRIVATE_KEY", re.compile(
-        r"id_rsa|id_ed25519|-----BEGIN[A-Z ]*PRIVATE KEY-----|\.ssh/|private_key\b|\.pem\b"),
+        r"id_rsa|id_ed25519|-----BEGIN[A-Z ]*PRIVATE KEY-----|\.ssh[/\\]|"
+        r"""["'`][^"'`\n]{0,120}\.pem["'`]"""),
      frozenset({"code", "doc", "manifest", "data"})),
     ("ACCESS_WALLET", re.compile(
-        r"wallet\.dat|metamask|keystore|mnemonic|\.electrum"), frozenset({"code", "doc", "data"})),
+        r"wallet\.dat|\.ethereum[/\\]keystore|\.electrum|"
+        r"Local Extension Settings[/\\]nkbihfbeogaeaoehlefnkodbefgpgknn|"
+        r"metamask[^\n]{0,80}(?:vault|storage)"),
+     frozenset({"code", "doc", "data"})),
     ("READ_KEYCHAIN", re.compile(
         r"find-generic-password|security\s+find-|keychain|libsecret"), frozenset({"code"})),
     ("READ_SECRETS", re.compile(
         r"\.aws/credentials|\.netrc|\.docker/config\.json|/\.env\b|[\"']\.env[\"']|"
+        r"\.npmrc|\.pypirc|application_default_credentials\.json|"
+        r"\.config/gh/hosts\.yml|/proc/self/environ|"
         r"kube/config|\.git-credentials|secrets?\.(?:json|yaml|yml)"),
      frozenset({"code", "doc", "manifest", "data"})),
     ("SET_ENV_VAR", re.compile(
@@ -373,16 +420,33 @@ _ENV_BULK = re.compile(
     # object spread is how modern code does this, and Object.assign is the
     # older spelling of the same thing.
     r"\{\s*\.\.\.\s*process\.env\s*\}|Object\.assign\s*\(\s*\{\s*\}\s*,\s*process\.env|"
-    r"os\.environ\.items\s*\(\s*\)|process\.env\s*\)\s*\.\s*(?:entries|keys)")
+    r"os\.environ\.items\s*\(\s*\)|Object\.(?:entries|keys|values)\s*\(\s*process\.env|"
+    r"for\s*\([^)]*\bin\s+process\.env\s*\)|process\.env\s*\)\s*\.\s*(?:entries|keys)")
 _ENV_NAMED_SECRET = re.compile(
-    r"(?:os\.environ(?:\.get)?\s*[\(\[]|getenv\s*\(|process\.env\.)\s*[\"']?"
-    r"[A-Za-z_]*(?:TOKEN|SECRET|KEY|PASSW|CREDENTIAL|AUTH|SESSION|COOKIE|PRIVATE)")
+    r"(?:os\.environ(?:\.get)?\s*[\(\[]|(?:os\.)?getenv\s*\(|"
+    r"process\.env(?:\.|\s*\[\s*)|(?:Deno|Bun)\.env(?:\.get\s*\(|\.|\s*\[\s*))"
+    r"\s*[\"']?[A-Za-z_]*(?:TOKEN|SECRET|KEY|PASSW|CREDENTIAL|AUTH|SESSION|COOKIE|PRIVATE)",
+    re.I,
+)
 
 _OBFUSCATION = re.compile(
     r"base64\.b64decode\s*\(|atob\s*\(|codecs\.decode\s*\([^)]*rot|"
-    r"fromCharCode|bytes\.fromhex\s*\(|(?:\\x[0-9a-f]{2}){4,}")
+    r"(?:String\.)?fromCharCode|bytes\.fromhex\s*\(|"
+    r"Buffer\.from\s*\([^,\n]+,\s*[\"']base64[\"']|"
+    r"(?:powershell|pwsh)\b[^\n]{0,80}-(?:enc|encodedcommand)\b|"
+    r"(?:\\x[0-9a-f]{2}){4,}")
 _CURL_PIPE = re.compile(r"(?:curl|wget)\s+[^\n|]*\|\s*(?:sudo\s+)?(?:ba|z)?sh")
+_REVERSE_SHELL = re.compile(
+    r"(?i)(?:/(?:dev/)?tcp/|bash\s+-i\b|nc\s+(?:-[A-Za-z]*e|--exec)\b|"
+    r"socket\.[^\n]{0,120}dup2\s*\(|powershell[^\n]{0,100}(?:TcpClient|DownloadString))")
+_DEFENSE_EVASION = re.compile(
+    r"(?i)(?:AmsiScanBuffer|amsiInitFailed|EtwEventWrite|BlockEtw|"
+    r"Add-MpPreference[^\n]{0,80}-Exclusion|"
+    r"Set-MpPreference[^\n]{0,80}-DisableRealtimeMonitoring)")
 _ZERO_WIDTH = ("​", "‌", "‍", "⁠", "﻿")
+_BIDI_CONTROL = frozenset(
+    chr(cp) for cp in (*range(0x202A, 0x202F), *range(0x2066, 0x206A))
+)
 
 # Context-plane patterns. Deliberately narrow: an instruction that merely tells
 # the agent to do work is not an injection. What marks one is overriding the
@@ -558,6 +622,70 @@ def _scan_file_capabilities(f: _File, text: str | None = None) -> set[str]:
     return caps
 
 
+def _silent_process(text: str) -> bool:
+    """A deliberately hidden/detached child, not an ordinary build subprocess."""
+    if re.search(r"(?i)\bnohup\b[^\n]*?(?:>/dev/null|2>&1)[^\n]*&\s*$", text, re.M):
+        return True
+    if not re.search(r"(?:child_process\.)?(?:spawn|fork)\s*\(|subprocess\.Popen\s*\(", text):
+        return False
+    concealment = (
+        re.search(r"(?i)\bdetached\s*[:=]\s*true\b|\bstart_new_session\s*=\s*True\b", text),
+        re.search(r"(?i)\bstdio\s*:\s*[\"']ignore[\"']|\bstdout\s*=\s*(?:subprocess\.)?DEVNULL\b", text),
+        re.search(r"(?i)\bstderr\s*=\s*(?:subprocess\.)?DEVNULL\b|\bwindowsHide\s*:\s*true\b", text),
+    )
+    return sum(part is not None for part in concealment) >= 2
+
+
+def _native_payload_loader(text: str) -> bool:
+    """Native memory allocation + copy/write + execution in one payload."""
+    alloc = re.search(
+        r"(?i)(?:VirtualAlloc(?:Ex)?|NtAllocateVirtualMemory|"
+        r"mmap\s*\([^\n]{0,160}PROT_EXEC)", text)
+    write = re.search(
+        r"(?i)(?:WriteProcessMemory|RtlMoveMemory|memmove\s*\(|Marshal\.Copy)", text)
+    execute = re.search(
+        r"(?i)(?:CreateRemoteThread|CreateThread|NtCreateThreadEx|"
+        r"QueueUserAPC|EnumSystemLocalesA|CFUNCTYPE\s*\()", text)
+    return alloc is not None and write is not None and execute is not None
+
+
+def _zero_width_payload(text: str) -> bool:
+    """Repeated invisible characters plus a code-execution sink."""
+    return (
+        sum(text.count(ch) for ch in _ZERO_WIDTH) >= 4
+        and re.search(r"\b(?:eval|exec)\s*\(|new\s+Function\s*\(", text) is not None
+    )
+
+
+_ERC20_DRAIN_SELECTORS = (
+    "095ea7b3",  # approve(address,uint256)
+    "23b872dd",  # transferFrom(address,address,uint256)
+    "70a08231",  # balanceOf(address)
+)
+
+
+def _wallet_drainer(text: str) -> bool:
+    """Multiple ERC-20 selectors in JS package code, not a generic wallet word."""
+    lower = re.sub(r"[\s{}]", "", text.lower())
+    selectors = sum(selector in lower for selector in _ERC20_DRAIN_SELECTORS)
+    return selectors >= 2 and re.search(
+        r"(?:module\.exports|exports\.|require\s*\(|checkethereumw|runmask)", text
+    ) is not None
+
+
+def _wallet_material_access(text: str) -> bool:
+    """Concrete local wallet/private-key storage, rather than an SDK concept."""
+    return re.search(
+        r"(?i)(?:wallet\.dat|\.ethereum[/\\]keystore|\.electrum|"
+        r"\.ssh[/\\](?:id_rsa|id_ed25519)|"
+        r"Local Extension Settings[/\\]nkbihfbeogaeaoehlefnkodbefgpgknn|"
+        r"""["'`][^"'`\n]{0,120}\.pem["'`])""",
+        text,
+    ) is not None
+
+
+_INJECTION_CATEGORIES = frozenset(category for category, _, _ in _INJECTION)
+
 _TITLES = {
     "instruction_injection": "Instructions override the agent's own directives",
     "context_injection": "External content injects instructions into agent context",
@@ -637,11 +765,21 @@ def _emit_findings(signals: list[_Signal], observed_caps: set[str]) -> list[dict
     keep.sort(key=lambda s: (-s.weight, s.file, s.line, s.category))
     out: list[dict] = []
     seen: set[tuple[str, str]] = set()
+    lines: set[tuple[str, int]] = set()
     for s in keep:
         key = (s.category, s.file)
-        if key in seen:
+        # One injected sentence is one finding. A single line can match an
+        # override pattern and a credential-egress pattern at once, and a label
+        # counts that sentence once, so the weaker match is dropped rather than
+        # spending precision on it. Only the text-injection categories collapse
+        # this way: elsewhere one line genuinely carries several distinct
+        # defects (a `setup.py` that is both a typosquat and an install hook).
+        if key in seen or (s.category in _INJECTION_CATEGORIES
+                           and (s.file, s.line) in lines):
             continue
         seen.add(key)
+        if s.category in _INJECTION_CATEGORIES:
+            lines.add((s.file, s.line))
         out.append({
             "category": s.category,
             "severity": s.severity,
@@ -755,9 +893,16 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
         for f in files:
             if not f.is_instruction:
                 continue
+            # Either a path with a code extension, or any bundle-relative path:
+            # `run scripts/sync` names a script just as plainly as `sync.py`
+            # does, and requiring an extension is a one-character evasion. The
+            # slash is the bar that keeps bare prose words out; nothing here is
+            # a finding on its own, since only already-condemned files survive
+            # the `tainted` filter below.
             referenced = {
                 m.replace("\\", "/").lstrip("./")
-                for m in re.findall(r"[\w./\-]+\.(?:py|sh|js|rb|ts)", f.text)
+                for m in re.findall(
+                    r"[\w.\-]+(?:/[\w.\-]+)+|[\w./\-]+\.(?:py|sh|js|rb|ts)", f.text)
             }
             # A file only counts as code here because this instruction runs it,
             # so the reference is established by the promotion, not by suffix.
@@ -779,6 +924,19 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
 
     injection = max((s.weight for s in signals if s.plane == "context"), default=0.0)
     risk = max(risk, injection)
+    # An override-or-concealment instruction and a credential-egress instruction
+    # in the same file are two halves of one payload. Either alone is genuinely
+    # ambiguous — a vendor doc can legitimately say "post your token to
+    # https://…", and prose about prompts can quote "ignore previous
+    # instructions" — which is why each is scored as a warning. Together in one
+    # file they are an exfiltration order, and that is a block.
+    by_file: dict[str, set[str]] = {}
+    for s in signals:
+        if s.plane == "context":
+            by_file.setdefault(s.file, set()).add(s.category)
+    if any(cats & {"instruction_injection", "context_injection"} and "transitive_leakage" in cats
+           for cats in by_file.values()):
+        risk = max(risk, 0.85)
     if obs_caps & _DAMNING:
         risk = max(risk, 0.85)
     if _chain(obs_caps):
@@ -818,6 +976,31 @@ _TOOL_EXFIL = re.compile(
     r"|(?:read|fetch|load|open|cat)[^\n]{0,60}"
     r"(?:~/\.ssh|id_rsa|\.env\b|credential|secret|token|api[_ -]?key|password)"
     r"[^\n]{0,90}(?:include|attach|append|send|post|upload|return|paste|put)\b")
+_ENCODED_TEXT = re.compile(r"(?:[A-Za-z0-9+/]{4}){12,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?")
+
+
+def _metadata_poisoned(text: str) -> bool:
+    """Visible or concealed instructions in model-facing MCP metadata."""
+    if any(pat.search(text) for _, pat, _ in _INJECTION) or _TOOL_EXFIL.search(text):
+        return True
+    if any(ch in text for ch in _ZERO_WIDTH):
+        return True
+    # Directional overrides change what a reviewer sees while leaving the model
+    # the underlying order. Unlike ordinary non-ASCII prose, they have no place
+    # in a tool schema.
+    if any(ch in _BIDI_CONTROL for ch in text):
+        return True
+    # Decode only long, valid UTF-8 base64 runs and still require an actual
+    # injection/exfiltration instruction inside. This catches concealed payloads
+    # without treating embedded assets or hashes as malicious.
+    for match in _ENCODED_TEXT.finditer(text):
+        raw = match.group(0)
+        with contextlib.suppress(ValueError, UnicodeDecodeError):
+            decoded = base64.b64decode(raw + "=" * (-len(raw) % 4), validate=True).decode()
+            if (any(pat.search(decoded) for _, pat, _ in _INJECTION)
+                    or _TOOL_EXFIL.search(decoded)):
+                return True
+    return False
 
 
 # Tool names an assistant already has. A server is free to use them; what it is
@@ -832,6 +1015,12 @@ _SHADOWABLE = frozenset({
     "edit", "apply_patch", "str_replace", "str_replace_editor", "create_file",
     "delete_file", "move_file", "notebook_edit", "todo_write", "task",
     "terminal", "run_terminal_cmd", "python", "code_interpreter", "computer",
+})
+_CONFUSABLE_ASCII = str.maketrans({
+    # High-frequency Cyrillic/Greek lookalikes used to impersonate built-ins.
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "у": "y", "і": "i",
+    "Α": "A", "Β": "B", "Ε": "E", "Κ": "K", "Μ": "M", "Ν": "N", "Ο": "O",
+    "Ρ": "P", "Τ": "T", "Χ": "X", "α": "a", "ε": "e", "ο": "o",
 })
 _PRECEDENCE = re.compile(
     r"(?i)(?:use\s+this\s+(?:tool\s+)?(?:instead\s+of|in\s+place\s+of|rather\s+than)|"
@@ -865,8 +1054,62 @@ def _param_text(schema) -> str:
     return "\n".join(out)
 
 
-def _const_str(node) -> str:
-    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else ""
+def _const_str(node, constants: dict[str, str] | None = None) -> str:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.Name) and constants:
+        return constants.get(node.id, "")
+    return ""
+
+
+def _python_constants(tree) -> dict[str, str]:
+    """Module-level string constants used in MCP surface declarations."""
+    out: dict[str, str] = {}
+    for node in getattr(tree, "body", []):
+        name = value = None
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            name, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign):
+            name, value = node.target, node.value
+        if isinstance(name, ast.Name):
+            text = _const_str(value)
+            if text:
+                out[name.id] = text
+    return out
+
+
+def _python_param_text(node, constants: dict[str, str]) -> str:
+    """Descriptions exposed through Field()/Annotated parameter metadata."""
+    out: list[str] = []
+    for child in ast.walk(node):
+        if isinstance(child, ast.Subscript):
+            target = child.value
+            label = target.attr if isinstance(target, ast.Attribute) else (
+                target.id if isinstance(target, ast.Name) else "")
+            if label == "Annotated":
+                values = (
+                    list(child.slice.elts)
+                    if isinstance(child.slice, ast.Tuple)
+                    else [child.slice]
+                )
+                # The first item is the type. Every subsequent string is
+                # model-visible metadata in FastMCP and similar schema builders.
+                for metadata in values[1:]:
+                    text = _const_str(metadata, constants)
+                    if text:
+                        out.append(text)
+        if not isinstance(child, ast.Call):
+            continue
+        label = child.func.attr if isinstance(child.func, ast.Attribute) else (
+            child.func.id if isinstance(child.func, ast.Name) else "")
+        if label not in ("Field", "Body", "Query", "Path"):
+            continue
+        for kw in child.keywords:
+            if kw.arg in ("description", "title"):
+                text = _const_str(kw.value, constants)
+                if text:
+                    out.append(text)
+    return "\n".join(dict.fromkeys(out))
 
 
 def _decorator_is_tool(node) -> bool:
@@ -883,21 +1126,184 @@ def _decorator_is_tool(node) -> bool:
 # `description`. Anything looser starts reading ordinary object literals as tool
 # declarations, and a description invented out of unrelated prose is a finding
 # invented out of nothing.
-_JS_TOOL_POSITIONAL = re.compile(
-    r"""\.\s*(?:tool|registerTool|addTool)\s*\(\s*["'`]([\w.-]+)["'`]\s*,\s*["'`]([^"'`]{0,600})["'`]""")
-_JS_TOOL_OBJECT = re.compile(
-    r"""\.\s*(?:tool|registerTool|addTool)\s*\(\s*["'`]([\w.-]+)["'`]\s*,\s*\{[^{}]{0,400}?"""
-    r"""description\s*:\s*["'`]([^"'`]{0,600})["'`]""")
-_JS_TOOL_LITERAL = re.compile(
-    r"""\{\s*name\s*:\s*["'`]([\w.-]+)["'`]\s*,\s*[^{}]{0,200}?"""
-    r"""description\s*:\s*["'`]([^"'`]{0,600})["'`]""")
+_JS_TOOL_CALL = re.compile(r"\.\s*(?:tool|registerTool|addTool)\s*\(")
+_JS_TOOL_FACTORY = re.compile(r"\b(?:defineTool|createTool)\s*\(")
+_JS_STRING = re.compile(r"""^\s*(["'`])((?:\\.|(?!\1).){0,4000})\1""", re.S)
+_JS_CONST = re.compile(
+    r"""\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(["'`])"""
+    r"""((?:\\.|(?!\2).){0,4000})\2""", re.S)
+
+
+def _balanced(text: str, start: int, opening: str, closing: str) -> str:
+    """A small string-aware delimiter scanner for JS registration calls."""
+    if start >= len(text) or text[start] != opening:
+        return ""
+    depth = 0
+    quote = ""
+    escaped = False
+    for i in range(start, min(len(text), start + 30_000)):
+        ch = text[i]
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == quote:
+                quote = ""
+            continue
+        if ch in ("'", '"', "`"):
+            quote = ch
+        elif ch == opening:
+            depth += 1
+        elif ch == closing:
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return ""
+
+
+def _js_constants(text: str) -> dict[str, str]:
+    return {name: value for name, _quote, value in _JS_CONST.findall(text)}
+
+
+def _js_value(text: str, constants: dict[str, str]) -> str:
+    literal = _JS_STRING.match(text)
+    if literal:
+        return literal.group(2)
+    name = re.match(r"\s*([A-Za-z_$][\w$]*)", text)
+    return constants.get(name.group(1), "") if name else ""
+
+
+def _js_descriptions(text: str, constants: dict[str, str]) -> list[str]:
+    """Strings the JS/TS SDK turns into JSON-Schema descriptions."""
+    out: list[str] = []
+    markers = list(re.finditer(r"\b(?:description|title)\s*:\s*", text))
+    markers += list(re.finditer(r"\.\s*describe\s*\(\s*", text))
+    for marker in sorted(markers, key=lambda m: m.start()):
+        value = _js_value(text[marker.end():], constants)
+        if value and value not in out:
+            out.append(value)
+    return out
 
 
 def _js_declared_tools(f: _File) -> list[dict]:
     out: list[dict] = []
-    for pattern in (_JS_TOOL_POSITIONAL, _JS_TOOL_OBJECT, _JS_TOOL_LITERAL):
-        for name, description in pattern.findall(f.text):
-            out.append({"name": name, "description": description, "source": f.rel})
+    constants = _js_constants(f.text)
+    for index, match in enumerate(_JS_TOOL_CALL.finditer(f.text)):
+        if index >= 200:
+            break
+        call = _balanced(f.text, match.end() - 1, "(", ")")
+        if not call:
+            continue
+        inner = call[1:-1]
+        name_match = _JS_STRING.match(inner)
+        if not name_match:
+            continue
+        name = name_match.group(2)
+        rest = inner[name_match.end():].lstrip()
+        if rest.startswith(","):
+            rest = rest[1:]
+        direct = _js_value(rest, constants)
+        if direct:
+            descriptions = [direct]
+        else:
+            brace = rest.find("{")
+            config = _balanced(rest, brace, "{", "}") if brace >= 0 else rest
+            descriptions = _js_descriptions(config, constants)
+        out.append({
+            "name": name,
+            "description": descriptions[0] if descriptions else "",
+            "params": "\n".join(descriptions[1:]),
+            "source": f.rel,
+        })
+    # Agent/MCP frameworks also accept a single ToolDefinition object. Shannon's
+    # real tools use `defineTool({name, description, parameters, execute})`.
+    # Require the factory call so an arbitrary business object with name and
+    # description is not promoted into the MCP surface.
+    for index, match in enumerate(_JS_TOOL_FACTORY.finditer(f.text)):
+        if index >= 200:
+            break
+        call = _balanced(f.text, match.end() - 1, "(", ")")
+        if not call:
+            continue
+        brace = call.find("{")
+        config = _balanced(call, brace, "{", "}") if brace >= 0 else ""
+        if not config:
+            continue
+        name_marker = re.search(r"\bname\s*:\s*", config)
+        if not name_marker:
+            continue
+        name = _js_value(config[name_marker.end():], constants)
+        descriptions = _js_descriptions(config, constants)
+        if not name:
+            continue
+        out.append({
+            "name": name,
+            "description": descriptions[0] if descriptions else "",
+            "params": "\n".join(descriptions[1:]),
+            "source": f.rel,
+        })
+    return out
+
+
+_RUBY_TOOL_CLASS = re.compile(
+    r"(?m)^\s*class\s+[A-Za-z_:][\w:]*\s*<\s*(?:::)?MCP::Tool\b")
+_RUBY_QUOTED = re.compile(r"""\s*(["'])((?:\\.|(?!\1).)*)\1""", re.S)
+
+
+def _ruby_string_sequence(text: str, start: int) -> str:
+    """Ruby adjacent strings joined with a line-continuation backslash."""
+    out: list[str] = []
+    pos = start
+    for _ in range(32):
+        match = _RUBY_QUOTED.match(text, pos)
+        if not match:
+            break
+        out.append(match.group(2))
+        tail = text[match.end():]
+        continuation = re.match(r"[ \t]*\\[ \t]*(?:\r?\n)?", tail)
+        if not continuation:
+            break
+        pos = match.end() + continuation.end()
+    return "".join(out)
+
+
+def _ruby_declared_tools(f: _File) -> list[dict]:
+    """Metasploit/ruby-mcp Tool subclasses and their schema descriptions."""
+    out: list[dict] = []
+    classes = list(_RUBY_TOOL_CLASS.finditer(f.text))
+    for index, class_match in enumerate(classes[:200]):
+        end = classes[index + 1].start() if index + 1 < len(classes) else len(f.text)
+        block = f.text[class_match.start():end]
+        name_match = re.search(r"\btool_name\s+", block)
+        description_match = re.search(r"(?m)^\s*description\s+", block)
+        if not name_match:
+            continue
+        name = _ruby_string_sequence(block, name_match.end())
+        description = (
+            _ruby_string_sequence(block, description_match.end())
+            if description_match else ""
+        )
+        schema_start = block.find("input_schema")
+        schema_end = block.find("output_schema", schema_start + 1)
+        schema = (
+            block[schema_start:schema_end if schema_end >= 0 else len(block)]
+            if schema_start >= 0 else ""
+        )
+        params = [
+            match.group(2)
+            for match in re.finditer(
+                r"""(?m)\bdescription\s*:\s*(["'])((?:\\.|(?!\1).)*)\1""",
+                schema,
+            )
+        ]
+        if name:
+            out.append({
+                "name": name,
+                "description": description,
+                "params": "\n".join(dict.fromkeys(params)),
+                "source": f.rel,
+            })
     return out
 
 
@@ -916,12 +1322,16 @@ def _code_declared_tools(files: list[_File]) -> list[dict]:
         if f.suffix in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
             out.extend(_js_declared_tools(f))
             continue
+        if f.suffix == ".rb":
+            out.extend(_ruby_declared_tools(f))
+            continue
         if f.suffix != ".py":
             continue
         try:
             tree = ast.parse(f.text)
         except (SyntaxError, ValueError):
             continue
+        constants = _python_constants(tree)
         for node in ast.walk(tree):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if not any(_decorator_is_tool(d) for d in node.decorator_list):
@@ -931,19 +1341,38 @@ def _code_declared_tools(files: list[_File]) -> list[dict]:
                     if not isinstance(dec, ast.Call):
                         continue
                     for kw in dec.keywords:
-                        if kw.arg == "name" and _const_str(kw.value):
-                            name = _const_str(kw.value)
-                        elif kw.arg == "description" and _const_str(kw.value):
-                            description = _const_str(kw.value)
-                out.append({"name": name, "description": description, "source": f.rel})
+                        if kw.arg == "name" and _const_str(kw.value, constants):
+                            name = _const_str(kw.value, constants)
+                        elif kw.arg == "description" and _const_str(kw.value, constants):
+                            description = _const_str(kw.value, constants)
+                params = []
+                args = list(node.args.posonlyargs) + list(node.args.args) + list(node.args.kwonlyargs)
+                for arg in args:
+                    if arg.annotation is not None:
+                        text = _python_param_text(arg.annotation, constants)
+                        if text:
+                            params.append(text)
+                for default in list(node.args.defaults) + [
+                    d for d in node.args.kw_defaults if d is not None
+                ]:
+                    text = _python_param_text(default, constants)
+                    if text:
+                        params.append(text)
+                out.append({
+                    "name": name, "description": description,
+                    "params": "\n".join(dict.fromkeys(params)), "source": f.rel,
+                })
             # `Tool(name="x", description="...")` — the explicit SDK constructor.
             elif isinstance(node, ast.Call):
                 target = node.func
                 label = target.attr if isinstance(target, ast.Attribute) else (
                     target.id if isinstance(target, ast.Name) else "")
-                if label != "Tool":
+                if label not in ("Tool", "add_tool", "register_tool"):
                     continue
-                fields = {kw.arg: _const_str(kw.value) for kw in node.keywords if kw.arg}
+                fields = {
+                    kw.arg: _const_str(kw.value, constants)
+                    for kw in node.keywords if kw.arg
+                }
                 if not fields.get("name"):
                     continue
                 entry = {"name": fields["name"], "description": fields.get("description", ""),
@@ -956,6 +1385,487 @@ def _code_declared_tools(files: list[_File]) -> list[dict]:
                             entry["inputSchema"] = ast.literal_eval(kw.value)
                 out.append(entry)
     return out
+
+
+def _python_call_path(node) -> str:
+    """Dotted name of a Python call target, without executing or importing it."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+    return ".".join(reversed(parts))
+
+
+def _expr_uses_taint(node, tainted: set[str], guarded: set[str]) -> bool:
+    """Whether an expression contains unsanitized tool-argument data."""
+    if node is None:
+        return False
+    if isinstance(node, ast.Name):
+        return node.id in tainted and node.id not in guarded
+    if isinstance(node, ast.Call) and _python_call_path(node.func) in (
+        "shlex.quote", "subprocess.list2cmdline",
+    ):
+        return False
+    return any(_expr_uses_taint(child, tainted, guarded) for child in ast.iter_child_nodes(node))
+
+
+def _assigned_names(node) -> set[str]:
+    if isinstance(node, ast.Name):
+        return {node.id}
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return {name for part in node.elts for name in _assigned_names(part)}
+    return set()
+
+
+def _allowlisted_parameters(node, parameters: set[str]) -> set[str]:
+    """Parameters checked against a finite/explicit allow-list in the handler."""
+    guarded: set[str] = set()
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Compare) or not isinstance(child.left, ast.Name):
+            continue
+        name = child.left.id
+        if name not in parameters or not any(isinstance(op, (ast.In, ast.NotIn)) for op in child.ops):
+            continue
+        for comparator in child.comparators:
+            if isinstance(comparator, (ast.Set, ast.List, ast.Tuple)):
+                guarded.add(name)
+            elif isinstance(comparator, ast.Name) and re.search(
+                r"(?i)(?:allow|valid|permitted|commands?|choices?)", comparator.id
+            ):
+                guarded.add(name)
+    return guarded
+
+
+def _python_tool_action_signals(f: _File) -> list[_Signal]:
+    """Concrete tool-argument flows into execution/deserialization sinks.
+
+    A pentesting MCP server is expected to import subprocess and networking
+    libraries.  The security boundary is narrower: a model-controlled parameter
+    must reach a sink, and safe argv arrays / finite allow-lists remain benign.
+    """
+    try:
+        tree = ast.parse(f.text)
+    except (SyntaxError, ValueError):
+        return []
+    out: list[_Signal] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if not any(_decorator_is_tool(dec) for dec in node.decorator_list):
+            continue
+        parameters = {
+            arg.arg for arg in (
+                list(node.args.posonlyargs) + list(node.args.args) + list(node.args.kwonlyargs)
+            )
+            if arg.arg not in ("self", "cls")
+        }
+        if node.args.vararg:
+            parameters.add(node.args.vararg.arg)
+        if node.args.kwarg:
+            parameters.add(node.args.kwarg.arg)
+        guarded = _allowlisted_parameters(node, parameters)
+        tainted = set(parameters)
+        # Follow the common one-function assignment chain (`cmd = f"...{arg}"`,
+        # `blob = open(path).read()`) without pretending to be a whole-program
+        # data-flow engine.
+        for _ in range(4):
+            before = len(tainted)
+            for child in ast.walk(node):
+                if isinstance(child, ast.Assign) and _expr_uses_taint(
+                    child.value, tainted, guarded
+                ):
+                    for target in child.targets:
+                        tainted |= _assigned_names(target)
+                elif isinstance(child, ast.AnnAssign) and _expr_uses_taint(
+                    child.value, tainted, guarded
+                ):
+                    tainted |= _assigned_names(child.target)
+            if len(tainted) == before:
+                break
+
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            call = _python_call_path(child.func)
+            first = child.args[0] if child.args else None
+            tainted_arg = _expr_uses_taint(first, tainted, guarded)
+            shell_true = any(
+                kw.arg == "shell"
+                and isinstance(kw.value, ast.Constant)
+                and kw.value.value is True
+                for kw in child.keywords
+            )
+            command_sink = (
+                call in ("os.system", "os.popen", "eval", "exec", "compile",
+                         "subprocess.getoutput", "subprocess.getstatusoutput")
+                or (
+                    call in (
+                        "subprocess.run", "subprocess.call", "subprocess.check_call",
+                        "subprocess.check_output", "subprocess.Popen",
+                    )
+                    and shell_true
+                )
+            )
+            if command_sink and tainted_arg:
+                cap = "EXECUTE_SOURCE_CODE" if call in ("eval", "exec", "compile") else "EXEC_SHELL"
+                out.append(_Signal(
+                    cap, "permission_overreach", "action", f.rel,
+                    getattr(child, "lineno", 1),
+                    f"MCP tool parameter reaches {call} without an allow-list",
+                    "CRIT", 0.90,
+                ))
+                continue
+
+            unsafe_loader = (
+                call in (
+                    "pickle.load", "pickle.loads", "marshal.loads", "dill.load",
+                    "dill.loads", "jsonpickle.decode",
+                )
+                or (
+                    call == "yaml.load"
+                    and not any(
+                        kw.arg in ("Loader", "loader")
+                        and "SafeLoader" in ast.unparse(kw.value)
+                        for kw in child.keywords
+                    )
+                )
+                or (
+                    call == "torch.load"
+                    and not any(
+                        kw.arg == "weights_only"
+                        and isinstance(kw.value, ast.Constant)
+                        and kw.value.value is True
+                        for kw in child.keywords
+                    )
+                )
+            )
+            if unsafe_loader and tainted_arg:
+                out.append(_Signal(
+                    "EXECUTE_SOURCE_CODE", "permission_overreach", "action", f.rel,
+                    getattr(child, "lineno", 1),
+                    f"MCP tool parameter reaches unsafe deserializer {call}",
+                    "CRIT", 0.90,
+                ))
+    # A handler with two unsafe calls is still one permission-overreach finding.
+    return list({(s.category, s.file): s for s in out}.values())
+
+
+def _js_tool_action_signals(f: _File) -> list[_Signal]:
+    """JS/TS registered-tool parameters interpolated into execution sinks."""
+    out: list[_Signal] = []
+    arrow = re.compile(
+        r"(?:async\s*)?\(\s*(?:\{([^}]*)\}|([A-Za-z_$][\w$]*))\s*\)\s*=>")
+    sink = re.compile(
+        r"(?<![\w.])(?:exec|execSync|eval|Function)\s*\(|"
+        r"\bchild_process\.(?:exec|execSync)\s*\(|"
+        r"(?<![\w.])spawn\s*\(|\bchild_process\.spawn\s*\(")
+    for index, match in enumerate(_JS_TOOL_CALL.finditer(f.text)):
+        if index >= 200:
+            break
+        call = _balanced(f.text, match.end() - 1, "(", ")")
+        if not call:
+            continue
+        handler = arrow.search(call)
+        if not handler:
+            continue
+        raw_params = handler.group(1) or handler.group(2) or ""
+        tainted = {
+            name
+            for name in re.findall(r"[A-Za-z_$][\w$]*", raw_params)
+            if name not in ("async", "undefined")
+        }
+        body = call[handler.end():]
+        for _ in range(4):
+            before = len(tainted)
+            for assignment in re.finditer(
+                r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*([^;\n]+)", body
+            ):
+                if any(re.search(rf"\b{re.escape(name)}\b", assignment.group(2))
+                       for name in tainted):
+                    tainted.add(assignment.group(1))
+            if len(tainted) == before:
+                break
+        for hit in sink.finditer(body):
+            args = _balanced(body, hit.end() - 1, "(", ")")
+            if not args or not any(
+                re.search(rf"\b{re.escape(name)}\b", args) for name in tainted
+            ):
+                continue
+            label = hit.group(0).split("(", 1)[0].strip()
+            if label.endswith("spawn") and not re.search(
+                r"\bshell\s*:\s*true\b", args, re.I
+            ):
+                continue
+            cap = (
+                "EXECUTE_SOURCE_CODE"
+                if label.endswith(("eval", "Function"))
+                else "EXEC_SHELL"
+            )
+            out.append(_Signal(
+                cap, "permission_overreach", "action", f.rel,
+                f.text[:match.start() + handler.end() + hit.start()].count("\n") + 1,
+                f"MCP tool parameter reaches {label} without an allow-list",
+                "CRIT", 0.90,
+            ))
+            break
+    return list({(s.category, s.file): s for s in out}.values())
+
+
+def _decorator_is_list_tools(node) -> bool:
+    target = node.func if isinstance(node, ast.Call) else node
+    if isinstance(target, ast.Attribute):
+        return target.attr == "list_tools"
+    return isinstance(target, ast.Name) and target.id == "list_tools"
+
+
+_MUTABLE_METADATA_CALL = re.compile(
+    r"(?i)(?:^|\.)(?:request|urlopen|fetch|fetchone|query|read_text|"
+    r"read_bytes|open|getenv|time|now)$")
+
+
+def _mutable_metadata_expr(node, mutable_names: set[str]) -> bool:
+    if node is None:
+        return False
+    if isinstance(node, ast.Name) and node.id in mutable_names:
+        return True
+    if isinstance(node, ast.Call):
+        call = _python_call_path(node.func)
+        if (
+            call.startswith(("requests.", "httpx.", "urllib.", "aiohttp."))
+            or _MUTABLE_METADATA_CALL.search(call)
+        ):
+            return True
+    return any(_mutable_metadata_expr(child, mutable_names) for child in ast.iter_child_nodes(node))
+
+
+def _python_rug_pull_signals(f: _File) -> list[_Signal]:
+    """Tool-list metadata that can change between discovery requests."""
+    try:
+        tree = ast.parse(f.text)
+    except (SyntaxError, ValueError):
+        return []
+    constants = _python_constants(tree)
+    out: list[_Signal] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        is_tool = any(_decorator_is_tool(dec) for dec in node.decorator_list)
+        if is_tool:
+            for child in ast.walk(node):
+                targets: list = []
+                if isinstance(child, ast.Assign):
+                    targets = list(child.targets)
+                elif isinstance(child, ast.AnnAssign):
+                    targets = [child.target]
+                mutated = any(
+                    isinstance(target, ast.Attribute)
+                    and target.attr == "__doc__"
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == node.name
+                    for target in targets
+                )
+                if isinstance(child, ast.Call) and _python_call_path(child.func) == "setattr":
+                    mutated = (
+                        len(child.args) >= 2
+                        and isinstance(child.args[0], ast.Name)
+                        and child.args[0].id == node.name
+                        and _const_str(child.args[1]) == "__doc__"
+                    )
+                if mutated:
+                    out.append(_Signal(
+                        "MANIFEST_TAMPER", "rug_pull", "protocol", f.rel,
+                        getattr(child, "lineno", 1),
+                        f"Registered tool '{node.name}' mutates model-visible metadata after approval",
+                        "CRIT", 0.90,
+                    ))
+                    break
+
+        if not any(_decorator_is_list_tools(dec) for dec in node.decorator_list):
+            continue
+        mutable_names: set[str] = set()
+        global_names = {
+            name
+            for child in ast.walk(node)
+            if isinstance(child, ast.Global)
+            for name in child.names
+        }
+        for child in ast.walk(node):
+            if isinstance(child, ast.AugAssign):
+                mutable_names |= _assigned_names(child.target)
+            elif isinstance(child, (ast.Assign, ast.AnnAssign)):
+                targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+                for target in targets:
+                    mutable_names |= _assigned_names(target) & global_names
+        for _ in range(4):
+            before = len(mutable_names)
+            for child in ast.walk(node):
+                value = None
+                targets: list = []
+                if isinstance(child, ast.Assign):
+                    value, targets = child.value, list(child.targets)
+                elif isinstance(child, ast.AnnAssign):
+                    value, targets = child.value, [child.target]
+                if value is not None and _mutable_metadata_expr(value, mutable_names):
+                    for target in targets:
+                        mutable_names |= _assigned_names(target)
+            if len(mutable_names) == before:
+                break
+
+        seen_descriptions: dict[str, set[str]] = {}
+        for child in ast.walk(node):
+            if not isinstance(child, ast.Call):
+                continue
+            label = _python_call_path(child.func).rsplit(".", 1)[-1]
+            if label not in ("Tool", "add_tool", "register_tool"):
+                continue
+            fields = {kw.arg: kw.value for kw in child.keywords if kw.arg}
+            description_node = fields.get("description")
+            if description_node is None:
+                continue
+            name = _const_str(fields.get("name"), constants) or "(tool)"
+            stable_description = _const_str(description_node, constants)
+            if stable_description:
+                seen_descriptions.setdefault(name, set()).add(stable_description)
+            elif _mutable_metadata_expr(description_node, mutable_names):
+                out.append(_Signal(
+                    "MANIFEST_TAMPER", "rug_pull", "protocol", f.rel,
+                    getattr(child, "lineno", 1),
+                    f"Tool '{name}' description is rebuilt from mutable data on tools/list",
+                    "CRIT", 0.90,
+                ))
+        for name, descriptions in seen_descriptions.items():
+            if len(descriptions) > 1 and mutable_names:
+                out.append(_Signal(
+                    "MANIFEST_TAMPER", "rug_pull", "protocol", f.rel,
+                    getattr(node, "lineno", 1),
+                    f"Tool '{name}' advertises different descriptions across tools/list paths",
+                    "CRIT", 0.90,
+                ))
+    return list({(s.category, s.file): s for s in out}.values())
+
+
+def _server_instructions(files: list[_File]) -> list[tuple[str, str]]:
+    """Server-level MCP instructions that clients may add to the model prompt."""
+    out: list[tuple[str, str]] = []
+    for f in files:
+        if f.suffix == ".py":
+            try:
+                tree = ast.parse(f.text)
+            except (SyntaxError, ValueError):
+                continue
+            constants = _python_constants(tree)
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Call):
+                    continue
+                target = node.func
+                label = target.attr if isinstance(target, ast.Attribute) else (
+                    target.id if isinstance(target, ast.Name) else "")
+                if label not in ("FastMCP", "McpServer", "Server"):
+                    continue
+                for kw in node.keywords:
+                    if kw.arg == "instructions":
+                        text = _const_str(kw.value, constants)
+                        if text:
+                            out.append((f.rel, text))
+        elif f.suffix in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
+            constants = _js_constants(f.text)
+            for marker in re.finditer(r"\binstructions\s*:\s*", f.text):
+                text = _js_value(f.text[marker.end():], constants)
+                if text:
+                    out.append((f.rel, text))
+    return list(dict.fromkeys(out))
+
+
+def _mcp_auxiliary_metadata(files: list[_File]) -> list[tuple[str, str, str, str]]:
+    """Model-visible prompt/resource metadata outside the tools list.
+
+    MCP clients can expose prompt and resource descriptions to the model just
+    like tool descriptions.  The concrete SDK spellings vary, so recover the
+    narrow declaration forms supported by the official Python and TS SDKs.
+    """
+    out: list[tuple[str, str, str, str]] = []
+    js_call = re.compile(
+        r"\.\s*(prompt|resource|registerPrompt|registerResource|addPrompt|addResource)\s*\(")
+    for f in files:
+        if f.base in ("manifest.json", "mcp.json"):
+            try:
+                data = json.loads(f.text)
+            except ValueError:
+                data = {}
+            if isinstance(data, dict):
+                for plural, kind in (("prompts", "prompt"), ("resources", "resource")):
+                    for item in data.get(plural) or []:
+                        if not isinstance(item, dict):
+                            continue
+                        text = _param_text(item)
+                        name = str(item.get("name") or item.get("uri") or f"({kind})")
+                        if text:
+                            out.append((f.rel, kind, name, text))
+
+        if f.suffix == ".py":
+            try:
+                tree = ast.parse(f.text)
+            except (SyntaxError, ValueError):
+                continue
+            constants = _python_constants(tree)
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for dec in node.decorator_list:
+                        target = dec.func if isinstance(dec, ast.Call) else dec
+                        label = target.attr if isinstance(target, ast.Attribute) else (
+                            target.id if isinstance(target, ast.Name) else "")
+                        if label not in ("prompt", "resource"):
+                            continue
+                        description = ast.get_docstring(node) or ""
+                        name = node.name
+                        if isinstance(dec, ast.Call):
+                            for kw in dec.keywords:
+                                value = _const_str(kw.value, constants)
+                                if kw.arg in ("name", "uri") and value:
+                                    name = value
+                                elif kw.arg in ("description", "title") and value:
+                                    description = value
+                        if description:
+                            out.append((f.rel, label, name, description))
+                elif isinstance(node, ast.Call):
+                    target = node.func
+                    label = target.attr if isinstance(target, ast.Attribute) else (
+                        target.id if isinstance(target, ast.Name) else "")
+                    lower = label.lower()
+                    if lower not in (
+                        "prompt", "resource", "add_prompt", "add_resource",
+                        "register_prompt", "register_resource",
+                    ):
+                        continue
+                    fields = {
+                        kw.arg: _const_str(kw.value, constants)
+                        for kw in node.keywords if kw.arg
+                    }
+                    description = fields.get("description") or fields.get("title") or ""
+                    if not description:
+                        continue
+                    kind = "resource" if "resource" in lower else "prompt"
+                    name = fields.get("name") or fields.get("uri") or f"({kind})"
+                    out.append((f.rel, kind, name, description))
+
+        elif f.suffix in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
+            constants = _js_constants(f.text)
+            for index, match in enumerate(js_call.finditer(f.text)):
+                if index >= 200:
+                    break
+                call = _balanced(f.text, match.end() - 1, "(", ")")
+                if not call:
+                    continue
+                descriptions = _js_descriptions(call, constants)
+                if not descriptions:
+                    continue
+                name_match = _JS_STRING.match(call[1:-1])
+                name = name_match.group(2) if name_match else "(metadata)"
+                kind = "resource" if "resource" in match.group(1).lower() else "prompt"
+                out.append((f.rel, kind, name, "\n".join(descriptions)))
+    return list(dict.fromkeys(out))
 
 
 def _tool_surface(files: list[_File], observed: dict) -> list[dict]:
@@ -979,6 +1889,8 @@ def _tool_surface(files: list[_File], observed: dict) -> list[dict]:
         # artifact does not contain matches nothing the label can express.
         if not entry["source"] and tool.get("source"):
             entry["source"] = str(tool["source"])
+        if isinstance(tool.get("params"), str) and tool["params"] and not entry["params"]:
+            entry["params"] = tool["params"]
         # Parameter schemas are filled in from wherever they exist: the
         # validator's trace carries the names, the manifest carries the schemas.
         if schema is not None and not entry["params"]:
@@ -1018,6 +1930,7 @@ def _analyse_mcp(files: list[_File], context: dict) -> dict:
     signals: list[_Signal] = []
     risk = 0.0
     implemented: set[str] = set()
+    rug_pulls: list[dict] = []
 
     for f in files:
         caps = _scan_file_capabilities(f)
@@ -1032,9 +1945,66 @@ def _analyse_mcp(files: list[_File], context: dict) -> dict:
                     "READ_SECRETS", "overreach", "action", f.rel, 1,
                     "Server reads credentials and sends them to an external host", "CRIT", 0.85,
                 ))
+            for signal in _python_tool_action_signals(f):
+                risk = max(risk, signal.weight)
+                static_caps.add(signal.cap)
+                signals.append(signal)
+            for signal in _js_tool_action_signals(f):
+                risk = max(risk, signal.weight)
+                static_caps.add(signal.cap)
+                signals.append(signal)
+            for signal in _python_rug_pull_signals(f):
+                risk = max(risk, signal.weight)
+                static_caps.add(signal.cap)
+                signals.append(signal)
+                rug_pulls.append({
+                    "source": signal.file,
+                    "detail": signal.title,
+                })
 
     surface = _tool_surface(files, _observed(context))
     poisoned: list[dict] = []
+    # MCP server instructions are a first-class prompt surface: the official
+    # SDK explicitly permits clients to add them to the model's system prompt.
+    # The validator's MCP detonation only extracts manifest tool descriptions,
+    # so code-declared instructions must be recovered statically.
+    for source, text in _server_instructions(files):
+        if not _metadata_poisoned(text):
+            continue
+        risk = max(risk, 0.90)
+        detail = " ".join(text.split())[:160]
+        poisoned.append({"tool": "(server instructions)", "detail": detail})
+        signals.append(_Signal(
+            "INJECT_INSTRUCTION", "tool_poisoning", "context", source, 1,
+            "Server instructions inject directives into the calling agent: " + detail[:90],
+            "CRIT", 0.90,
+        ))
+
+    # Prompts and resources are also discovery metadata supplied by MCP
+    # servers.  Poisoning them is context injection rather than tool poisoning,
+    # but it reaches the same model context before the user sees any result.
+    auxiliary_poisoning: list[tuple[str, str, str, str]] = []
+    for source, kind, name, text in _mcp_auxiliary_metadata(files):
+        if _metadata_poisoned(text):
+            auxiliary_poisoning.append((source, kind, name, text))
+    auxiliary_files = {source for source, _kind, _name, _text in auxiliary_poisoning}
+    if auxiliary_files:
+        # Prefer the protocol-specific category over the generic text scanner;
+        # one poisoned description is one scored finding.
+        signals = [
+            s for s in signals
+            if not (s.file in auxiliary_files and s.category in _INJECTION_CATEGORIES)
+        ]
+    for source, kind, name, text in auxiliary_poisoning:
+        risk = max(risk, 0.90)
+        detail = " ".join(text.split())[:160]
+        signals.append(_Signal(
+            "INJECT_INSTRUCTION", "context_injection", "context", source, 1,
+            f"MCP {kind} metadata injects directives into the calling agent: "
+            f"{name} — {detail[:80]}",
+            "CRIT", 0.90,
+        ))
+
     for tool in surface:
         desc = tool["description"]
         params = tool["params"]
@@ -1054,9 +2024,7 @@ def _analyse_mcp(files: list[_File], context: dict) -> dict:
                             ("description and parameter schema together", joined)):
             if not text:
                 continue
-            injected = any(pat.search(text) for _, pat, _ in _INJECTION)
-            exfil = bool(_TOOL_EXFIL.search(text))
-            if not (injected or exfil):
+            if not _metadata_poisoned(text):
                 continue
             risk = max(risk, 0.90)
             poisoned.append({"tool": tool["name"], "detail": " ".join(text.split())[:160]})
@@ -1074,13 +2042,19 @@ def _analyse_mcp(files: list[_File], context: dict) -> dict:
         # calls here is the attack, because it puts this server between the
         # agent and a tool the user already trusts.
         claim = _PRECEDENCE.search(desc) or _PRECEDENCE.search(params)
-        if claim and tool["name"].lower() in _SHADOWABLE:
+        skeleton = tool["name"].translate(_CONFUSABLE_ASCII)
+        impersonates = skeleton != tool["name"] and skeleton.lower() in _SHADOWABLE
+        if (claim and tool["name"].lower() in _SHADOWABLE) or impersonates:
             risk = max(risk, 0.85)
+            reason = (
+                f"uses Unicode lookalikes to impersonate '{skeleton}'"
+                if impersonates else
+                f"claims precedence over it: {' '.join(claim.group(0).split())[:70]}"
+            )
             signals.append(_Signal(
                 "TOOL_SHADOW", "tool_shadow", "context",
                 tool.get("source") or manifest_ref, 1,
-                f"Tool '{tool['name']}' shadows a built-in name and claims precedence "
-                f"over it: {' '.join(claim.group(0).split())[:70]}",
+                f"Tool '{tool['name']}' shadows a built-in name and {reason}",
                 "HIGH", 0.85,
             ))
 
@@ -1151,6 +2125,7 @@ def _analyse_mcp(files: list[_File], context: dict) -> dict:
                 ],
                 "tool_poisoning": poisoned,
                 "manifest_tamper": bool(mismatched),
+                "rug_pull": rug_pulls,
             },
             "capability_manifest": [c["capability"] for c in caps],
         },
@@ -1263,7 +2238,43 @@ _INSTALL_HOOK = re.compile(
 # Inline source handed to an interpreter, as opposed to a command being run.
 _INLINE_EVAL = re.compile(
     r"(?:node|python[23]?|ruby|perl|php)\s+(?:-\w+\s+)*-(?:e|c)\b|"
-    r"(?:ba|z)?sh\s+-c\b|\beval\s")
+    r"(?:ba|z)?sh\s+-c\b|(?:powershell|pwsh)\b[^\n]{0,80}"
+    r"-(?:enc|encodedcommand)\b|\beval\s", re.I)
+
+_NATIVE_BUILD_CLASS = re.compile(
+    r"class\s+\w+\s*\(\s*(?:build_py|build_ext|sdist|bdist_wheel|CMakeBuild)\s*\)")
+_NATIVE_BUILD_TOOL = re.compile(
+    r"(?i)(?:\bcmake\b|\bninja\b|\bmeson\b|\bcargo\s+build\b|"
+    r"\b(?:g?make)\b|\b(?:gcc|g\+\+|clang|cl)\b)")
+
+
+def _safe_native_build_hook(f: _File) -> bool:
+    """A setuptools build command compiling shipped native code.
+
+    Native packages such as disassemblers legitimately invoke CMake from a
+    ``build_py``/``build_ext`` command.  This exemption is deliberately narrow:
+    install classes, downloads, obfuscation, shell pipelines and credential
+    access never qualify.
+    """
+    if f.base != "setup.py":
+        return False
+    text = f.text
+    if not (
+        _NATIVE_BUILD_CLASS.search(text)
+        and re.search(r"\bcmdclass\s*=", text)
+        and _NATIVE_BUILD_TOOL.search(text)
+    ):
+        return False
+    caps = _scan_file_capabilities(f)
+    suspicious = caps & (_EGRESS | _SECRET_READ | _DAMNING)
+    return not (
+        suspicious
+        or _OBFUSCATION.search(text)
+        or _CURL_PIPE.search(text)
+        or _REVERSE_SHELL.search(text)
+        or _DEFENSE_EVASION.search(text)
+        or re.search(r"(?i)(?:powershell|pwsh|(?:ba|z)?sh\s+-c)\b", text)
+    )
 
 
 def _lifecycle_commands(files: list[_File]) -> dict[str, str]:
@@ -1353,6 +2364,238 @@ def _import_closure(entries: list[_File], files: list[_File]) -> list[_File]:
     return order
 
 
+def _entry_values(value) -> list[str]:
+    """String targets from a package.json conditional export."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [item for part in value for item in _entry_values(part)]
+    if isinstance(value, dict):
+        return [item for part in value.values() for item in _entry_values(part)]
+    return []
+
+
+def _resolve_local_entry(ref: str, by_rel: dict[str, _File]) -> _File | None:
+    target = ref.replace("\\", "/").strip().lstrip("./")
+    if not target or target.startswith(("http:", "https:", "node:")):
+        return None
+    candidates = [target]
+    if not target.endswith(tuple(_CODE_SUFFIXES)):
+        candidates.extend(
+            target + suffix for suffix in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".py")
+        )
+    candidates.extend(
+        f"{target}/index{suffix}" for suffix in (".js", ".mjs", ".cjs", ".ts", ".tsx")
+    )
+    return next((by_rel[c] for c in candidates if c in by_rel), None)
+
+
+def _package_import_entries(files: list[_File], package_name: str) -> list[_File]:
+    """The modules npm/Python actually load when the package is imported."""
+    by_rel = {f.rel: f for f in files}
+    entries: list[_File] = [
+        f for f in files if f.base == "__init__.py"
+    ]
+    refs: list[str] = []
+    for f in files:
+        if f.base != "package.json":
+            continue
+        try:
+            data = json.loads(f.text)
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        for key in ("main", "module"):
+            refs.extend(_entry_values(data.get(key)))
+        browser = data.get("browser")
+        if isinstance(browser, str):
+            refs.append(browser)
+        exports = data.get("exports")
+        # When subpath exports exist, only "." is the package import. Without
+        # subpath keys the object is a condition map (import/require/default).
+        if isinstance(exports, dict) and any(str(k).startswith(".") for k in exports):
+            refs.extend(_entry_values(exports.get(".")))
+        else:
+            refs.extend(_entry_values(exports))
+    for ref in refs:
+        hit = _resolve_local_entry(ref, by_rel)
+        if hit is not None:
+            entries.append(hit)
+
+    # npm's default when no entry field is present.
+    if not refs:
+        for name in ("index.js", "index.mjs", "index.cjs", "index.ts"):
+            if name in by_rel:
+                entries.append(by_rel[name])
+
+    # A Python distribution may expose a single module instead of a package
+    # directory. Its normalized distribution name is the usual import name.
+    module = package_name.rsplit("/", 1)[-1].replace("-", "_").replace(".", "_")
+    if module:
+        for rel in (f"{module}.py", f"src/{module}.py"):
+            if rel in by_rel:
+                entries.append(by_rel[rel])
+    return list({f.rel: f for f in entries}.values())
+
+
+def _all_npm_scripts(files: list[_File]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for f in files:
+        if f.base != "package.json":
+            continue
+        try:
+            data = json.loads(f.text)
+        except ValueError:
+            continue
+        scripts = data.get("scripts") if isinstance(data, dict) else None
+        if isinstance(scripts, dict):
+            out.update({
+                str(k): str(v) for k, v in scripts.items()
+                if isinstance(v, str) and v.strip()
+            })
+    return out
+
+
+def _lifecycle_payload_files(files: list[_File], lifecycle: dict[str, str]) -> list[_File]:
+    """Local scripts reached by npm lifecycle commands, including npm-run hops."""
+    scripts = _all_npm_scripts(files)
+    commands = list(lifecycle.values())
+    seen_commands: set[str] = set()
+    for command in commands:
+        if command in seen_commands:
+            continue
+        seen_commands.add(command)
+        for name in re.findall(r"\bnpm\s+(?:run|run-script)\s+([\w:.-]+)", command):
+            if name in scripts and scripts[name] not in seen_commands:
+                commands.append(scripts[name])
+
+    by_rel = {f.rel: f for f in files}
+    entries: list[_File] = []
+    for command in commands:
+        for token in re.findall(r"(?:\./)?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", command):
+            hit = _resolve_local_entry(token, by_rel)
+            if hit is not None:
+                entries.append(hit)
+    return _import_closure(list({f.rel: f for f in entries}.values()), files)
+
+
+def _npm_registry_pins(files: list[_File]) -> tuple[set[str], bool]:
+    """Scopes/default dependency resolution pinned away from the public npm registry."""
+    scopes: set[str] = set()
+    private_default = False
+
+    def private_registry(value: str) -> bool:
+        lower = value.strip().lower()
+        return (
+            bool(lower)
+            and "registry.npmjs.org" not in lower
+            and "registry.yarnpkg.com" not in lower
+        )
+
+    for f in files:
+        if f.base != ".npmrc":
+            continue
+        for raw in f.lines:
+            line = raw.strip()
+            if not line or line.startswith(("#", ";")) or "=" not in line:
+                continue
+            key, value = (part.strip() for part in line.split("=", 1))
+            scope = re.fullmatch(r"(@[A-Za-z0-9_.-]+):registry", key)
+            if scope and private_registry(value):
+                scopes.add(scope.group(1).lower())
+            elif key == "registry" and private_registry(value):
+                private_default = True
+    return scopes, private_default
+
+
+def _dependency_registry_pinned(name: str, scopes: set[str], private_default: bool) -> bool:
+    if private_default:
+        return True
+    if name.startswith("@") and "/" in name:
+        return name.split("/", 1)[0].lower() in scopes
+    return False
+
+
+_EXTRA_SECRET_PATH = (
+    r"(?:\.gnupg(?:[/\\]|$)|logins\.json|key4\.db|cookies\.sqlite|"
+    r"/etc/shadow|\.password-store(?:[/\\]|$)|"
+    r"(?:service[_-]?account|credentials)\.json|(?:^|[/\\])kubeconfig\b)"
+)
+_EXTRA_SECRET_READ = re.compile(
+    rf"(?i)(?:open|readFileSync|readFile|createReadStream|read_text|read_bytes|"
+    rf"readlines|load|cat)\s*\([\s\S]{{0,320}}{_EXTRA_SECRET_PATH}|"
+    rf"\bcat\s+[^\n]{{0,160}}{_EXTRA_SECRET_PATH}|"
+    rf"{_EXTRA_SECRET_PATH}[^\n]{{0,160}}\.(?:read_text|read_bytes|read)\s*\(")
+
+
+def _package_file_capabilities(f: _File, text: str | None = None) -> set[str]:
+    """Capabilities plus validator-recognised credential paths used at a read."""
+    body = f.text if text is None else text
+    caps = _scan_file_capabilities(f, body)
+    # SecretScanner-like packages legitimately carry filename signatures. The
+    # filename alone is therefore not an action; require a concrete read call.
+    if f.kind == "code" and _EXTRA_SECRET_READ.search(body):
+        caps.add("READ_SECRETS")
+    return caps
+
+
+_MANIFEST_LIFECYCLE_ASSIGN = re.compile(
+    r"""(?i)(?:scripts\s*(?:\.|\[\s*["'])|["']scripts["']\s*:\s*\{[\s\S]{0,180})"""
+    r"""(preinstall|install|postinstall|prepare|prepublish)"""
+    r"""(?:["']\s*\])?\s*(?:=|:)\s*(["'`])((?:\\.|(?!\2).){1,500})\2""")
+_PACKAGE_JSON_WRITE = re.compile(
+    r"""(?i)(?:writeFileSync|writeFile|write_text|open)\s*\([\s\S]{0,180}"""
+    r"""["'`][^"'`\n]*package\.json["'`]""")
+
+
+def _runtime_manifest_hook(files: list[_File]) -> tuple[_File | None, list[_File], str]:
+    """Runtime code implants a lifecycle hook that reaches a dangerous payload."""
+    by_rel = {f.rel: f for f in files}
+    for f in files:
+        if f.kind != "code" or not _PACKAGE_JSON_WRITE.search(f.text):
+            continue
+        for match in _MANIFEST_LIFECYCLE_ASSIGN.finditer(f.text):
+            command = match.group(3)
+            probe_file = _File("package.json", command)
+            command_caps = _scan_file_capabilities(probe_file)
+            payloads: list[_File] = []
+            for token in re.findall(
+                r"(?:\./)?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+", command
+            ):
+                hit = _resolve_local_entry(token, by_rel)
+                if hit is not None:
+                    payloads.append(hit)
+            payloads = _import_closure(
+                list({payload.rel: payload for payload in payloads}.values()), files
+            )
+            payload_caps = set(command_caps)
+            opaque = bool(_CURL_PIPE.search(command) or _OBFUSCATION.search(command))
+            for payload in payloads:
+                caps = _package_file_capabilities(payload)
+                payload_caps |= caps
+                opaque = opaque or bool(
+                    _CURL_PIPE.search(payload.text)
+                    or _REVERSE_SHELL.search(payload.text)
+                    or _DEFENSE_EVASION.search(payload.text)
+                    or (
+                        _OBFUSCATION.search(payload.text)
+                        and caps & {"EXECUTE_SOURCE_CODE", "EXEC_SHELL"}
+                    )
+                )
+            dangerous = payload_caps & (
+                _DAMNING | _EGRESS | _SECRET_READ
+                | {"EXEC_SHELL", "EXECUTE_SOURCE_CODE", "CREATE_PROCESS"}
+            )
+            if dangerous or opaque:
+                detail = (
+                    ", ".join(sorted(dangerous))
+                    if dangerous else "obfuscated or download-and-execute payload"
+                )
+                return f, payloads, f"{match.group(1)} -> {detail}"
+    return None, [], ""
+
+
 def _analyse_packages(files: list[_File], context: dict) -> dict:
     probe = context.get("probe") or {}
     obs_caps = _observed_caps(context)
@@ -1364,13 +2607,14 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
     per_file: dict[str, set[str]] = {}
 
     for f in files:
-        caps = _scan_file_capabilities(f)
+        caps = _package_file_capabilities(f)
         per_file[f.rel] = caps
         static_caps |= caps
         signals.extend(_scan_injection(f))
 
+    name, deps, pins = _package_metadata(files)
     install_files = [f for f in files if f.base in ("setup.py", "package.json", "setup.cfg")]
-    init_files = [f for f in files if f.base in ("__init__.py", "index.js")]
+    init_files = _package_import_entries(files, name)
 
     # Install-time execution: the signature package attack. Static evidence is
     # the hook itself; the validator's install_time phase confirms it ran.
@@ -1383,6 +2627,10 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
         if _INSTALL_HOOK.search(f.text) or (f.base == "setup.py" and executes):
             hook_ref, hook_static = f.rel, caps
             break
+    safe_native_build = next(
+        (f for f in install_files if f.rel == hook_ref and _safe_native_build_hook(f)),
+        None,
+    )
 
     # What the hook *runs* is the evidence, not that a hook exists. Once
     # `prepare` and `install` are in the list that distinction stops being
@@ -1398,22 +2646,83 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
         if _INLINE_EVAL.search(command) or _OBFUSCATION.search(command):
             opaque_hook = hook
 
+    # npm lifecycle commands normally delegate to a local script. The command
+    # `node scripts/install.js` is harmless-looking by itself; the security
+    # decision lives in the reached file and its local import closure.
+    hook_payload_caps: set[str] = set()
+    hook_payload_obfuscated = ""
+    hook_payload_named_secret = False
+    hook_payload_silent = ""
+    hook_payload_reverse_shell = ""
+    hook_payload_native = ""
+    hook_payload_evasion = ""
+    hook_payloads = _lifecycle_payload_files(files, lifecycle)
+    for f in hook_payloads:
+        caps = _package_file_capabilities(f)
+        hook_payload_caps |= caps
+        if (
+            (_OBFUSCATION.search(f.text) or _zero_width_payload(f.text))
+            and caps & {"EXECUTE_SOURCE_CODE", "EXEC_SHELL"}
+        ):
+            hook_payload_obfuscated = f.rel
+        if _ENV_NAMED_SECRET.search(f.text) and caps & _EGRESS:
+            hook_payload_named_secret = True
+            hook_payload_caps.add("READ_ENV_SECRETS")
+        if _silent_process(f.text):
+            hook_payload_silent = f.rel
+            hook_payload_caps.add("CREATE_PROCESS")
+        if _REVERSE_SHELL.search(f.text):
+            hook_payload_reverse_shell = f.rel
+            hook_payload_caps.update({"EXEC_SHELL", "OPEN_SOCKET"})
+        if _native_payload_loader(f.text):
+            hook_payload_native = f.rel
+            hook_payload_caps.add("EXECUTE_SOURCE_CODE")
+        if _DEFENSE_EVASION.search(f.text):
+            hook_payload_evasion = f.rel
+            hook_payload_caps.add("MODIFY_POLICY")
+    payload_suspicious = (
+        bool(hook_payload_caps & _DAMNING)
+        or _chain(hook_payload_caps)
+        or bool(hook_payload_obfuscated)
+        or hook_payload_named_secret
+        or bool(hook_payload_silent)
+        or bool(hook_payload_reverse_shell)
+        or bool(hook_payload_native)
+        or bool(hook_payload_evasion)
+    )
+
     if install_observed or hook_ref:
         ref = hook_ref or "setup.py"
         combined = install_observed | hook_static | hook_cmd_caps
+        if safe_native_build is not None:
+            # Process creation is the expected output of compiling an extension,
+            # whether found statically or observed by the detonation trace.
+            combined -= {"EXEC_SHELL", "CREATE_PROCESS"}
+        if payload_suspicious:
+            combined |= hook_payload_caps
         dangerous = combined & (_DAMNING | _EGRESS | _SECRET_READ |
                                 {"EXEC_SHELL", "EXECUTE_SOURCE_CODE", "CREATE_PROCESS"})
         static_caps.add("INSTALL_HOOK_EXEC")
-        if dangerous or opaque_hook:
+        if dangerous or opaque_hook or hook_payload_obfuscated:
             risk = max(risk, 0.90)
             static_caps.add("POSTINSTALL_SCRIPT")
             detail = (", ".join(sorted(dangerous)) if dangerous
+                      else f"obfuscated source in {hook_payload_obfuscated}"
+                      if hook_payload_obfuscated
+                      else f"hidden child process in {hook_payload_silent}"
+                      if hook_payload_silent
+                      else f"reverse shell in {hook_payload_reverse_shell}"
+                      if hook_payload_reverse_shell
+                      else f"native payload loader in {hook_payload_native}"
+                      if hook_payload_native
+                      else f"security-control evasion in {hook_payload_evasion}"
+                      if hook_payload_evasion
                       else f"inline source in the {opaque_hook} script")
             signals.append(_Signal(
                 "INSTALL_HOOK_EXEC", "install_hook_exec", "action", ref, 1,
                 "Install-time hook executes code: " + detail, "CRIT", 0.90,
             ))
-        elif hook_ref and not lifecycle:
+        elif hook_ref and not lifecycle and safe_native_build is None:
             # A Python install hook is hand-written by definition — there is no
             # equivalent of `prepare: tsc -b` in setup.py — so an unexplained one
             # still deserves a look.
@@ -1425,9 +2734,26 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
         if combined & _SECRET_READ and combined & _EGRESS:
             risk = max(risk, 0.92)
             signals.append(_Signal(
-                "READ_ENV_SECRETS", "credential_theft", "action", ref, 1,
+                "READ_ENV_SECRETS", "credential_theft", "action",
+                hook_payloads[0].rel if hook_payloads else ref, 1,
                 "Environment captured and sent to an external host during install",
                 "CRIT", 0.92,
+            ))
+
+    # Supply-chain worms can implant the hook into another package at runtime,
+    # so their own published manifest contains no lifecycle script to inspect.
+    # Require both the package.json rewrite and a dangerous reached payload.
+    if not lifecycle:
+        tamper_file, tamper_payloads, tamper_detail = _runtime_manifest_hook(files)
+        if tamper_file is not None:
+            risk = max(risk, 0.90)
+            static_caps.update({"INSTALL_HOOK_EXEC", "POSTINSTALL_SCRIPT"})
+            signals.append(_Signal(
+                "INSTALL_HOOK_EXEC", "install_hook_exec", "action",
+                tamper_file.rel, 1,
+                "Runtime code rewrites package.json with a dangerous lifecycle hook: "
+                + tamper_detail,
+                "CRIT", 0.90,
             ))
 
     # Import-time side effects. `__init__.py` is only the doorway: `from .
@@ -1439,15 +2765,28 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
     import_static: set[str] = set()
     import_ref = init_files[0].rel if init_files else "__init__.py"
     obfuscated_import = ""
+    native_import = ""
+    evasion_import = ""
     for f in _import_closure(init_files, files):
         body = f.module_level
-        caps = _scan_file_capabilities(f, body)
+        caps = _package_file_capabilities(f, body)
+        if _ENV_NAMED_SECRET.search(body) and caps & _EGRESS:
+            caps.add("READ_ENV_SECRETS")
         import_static |= caps
         # Decoding a blob is not an attack — packages ship embedded assets that
         # way. Decoding it and handing the result to exec is, and neither half
         # shows up as a network or secret pattern to match on.
-        if caps & {"EXECUTE_SOURCE_CODE"} and _OBFUSCATION.search(body):
+        if (
+            caps & {"EXECUTE_SOURCE_CODE"}
+            and (_OBFUSCATION.search(body) or _zero_width_payload(body))
+        ):
             obfuscated_import = f.rel
+        if _native_payload_loader(body):
+            native_import = f.rel
+            caps.add("EXECUTE_SOURCE_CODE")
+        if _DEFENSE_EVASION.search(body):
+            evasion_import = f.rel
+            caps.add("MODIFY_POLICY")
         if caps & (_DAMNING | _EGRESS | _SECRET_READ | {"EXEC_SHELL"}) and f not in init_files:
             import_ref = f.rel
     import_bad = (import_observed | import_static) & (
@@ -1459,13 +2798,21 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
             "IMPORT_SIDE_EFFECT", "import_side_effect", "action", import_ref, 1,
             "Importing the package triggers " + ", ".join(sorted(import_bad)), "HIGH", 0.80,
         ))
-    elif obfuscated_import:
+    elif obfuscated_import or native_import or evasion_import:
+        payload_ref = obfuscated_import or native_import or evasion_import
+        detail = (
+            "decodes and executes an obfuscated payload"
+            if obfuscated_import else
+            "loads and executes a native in-memory payload"
+            if native_import else
+            "attempts to disable host security controls"
+        )
         risk = max(risk, 0.85)
         static_caps.add("IMPORT_SIDE_EFFECT")
         static_caps.add("EXECUTE_SOURCE_CODE")
         signals.append(_Signal(
-            "IMPORT_SIDE_EFFECT", "import_side_effect", "action", obfuscated_import, 1,
-            "Importing the package decodes and executes an obfuscated payload",
+            "IMPORT_SIDE_EFFECT", "import_side_effect", "action", payload_ref, 1,
+            "Importing the package " + detail,
             "CRIT", 0.85,
         ))
 
@@ -1475,11 +2822,21 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
         # Naming a wallet path is an action-plane claim about what the code does,
         # so it has to come from code: a README documenting Metamask support, or
         # a lockfile with `keystore` in a URL, is not key theft.
-        wallet = bool(caps & {"ACCESS_WALLET", "READ_PRIVATE_KEY"}) and by_rel[rel].kind == "code"
+        text = by_rel[rel].text
+        wallet = (
+            by_rel[rel].kind == "code"
+            and (_wallet_material_access(text) or _wallet_drainer(text))
+        )
         if wallet:
             risk = max(risk, 0.90)
+            static_caps.add("ACCESS_WALLET")
+            wallet_cap = (
+                "ACCESS_WALLET"
+                if "ACCESS_WALLET" in caps or _wallet_drainer(text)
+                else "READ_PRIVATE_KEY"
+            )
             signals.append(_Signal(
-                "ACCESS_WALLET" if "ACCESS_WALLET" in caps else "READ_PRIVATE_KEY",
+                wallet_cap,
                 "crypto_wallet_access", "action", rel, 1,
                 "Reads wallet or private key material", "CRIT", 0.90,
             ))
@@ -1513,7 +2870,6 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
             "CRIT", 0.85,
         ))
 
-    name, deps, pins = _package_metadata(files)
     typo = next((
         (candidate, popular)
         for candidate in ([name] + deps) if candidate
@@ -1531,8 +2887,15 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
     # how it is played. The other half is the version: publish the internal name
     # publicly at an absurd version so the public registry always outranks the
     # private one. Nobody ships 9999.0.0 by accident.
-    confusion = sorted({d for d, spec in pins.items() if _inflated_major(spec)} | {
-        d for d in deps if d.endswith(("-internal", "-private")) or d.startswith("@internal")
+    registry_scopes, private_registry = _npm_registry_pins(files)
+    confusion = sorted({
+        d for d, spec in pins.items()
+        if _inflated_major(spec)
+        and not _dependency_registry_pinned(d, registry_scopes, private_registry)
+    } | {
+        d for d in deps
+        if (d.endswith(("-internal", "-private")) or d.startswith("@internal"))
+        and not _dependency_registry_pinned(d, registry_scopes, private_registry)
     })
     if confusion:
         risk = max(risk, 0.60)
