@@ -21,10 +21,18 @@ UPSTREAM="${PHYLAX_UPSTREAM:-$(grep -E '^PHYLAX_UPSTREAM=' "$ENVF" 2>/dev/null |
 ENVTMP="$(mktemp)"
 trap 'rm -f "$ENVTMP"' EXIT
 python3 - "$LAB" "$ENVF" "$ENVTMP" <<'PY'
-import sys, pathlib
+import os, sys, pathlib
 lab, src, dst = map(pathlib.Path, sys.argv[1:4])
+overrides = {
+    "WALLET_HOTKEY": os.environ.get("PHYLAX_WALLET_HOTKEY_OVERRIDE"),
+    "PHYLAX_MINER_LABEL": os.environ.get("PHYLAX_MINER_LABEL_OVERRIDE"),
+    "PHYLAX_AGENT_CODE_PATH": os.environ.get("PHYLAX_AGENT_CODE_PATH_OVERRIDE"),
+}
 out = []
 for line in src.read_text().splitlines():
+    key = line.split("=", 1)[0] if "=" in line else ""
+    if overrides.get(key):
+        line = f"{key}={overrides[key]}"
     if line.startswith("PHYLAX_AGENT_CODE_PATH="):
         val = line.split("=", 1)[1].strip()
         if val and not val.startswith("/"):
@@ -35,8 +43,8 @@ PY
 
 TRACK=$(grep -E '^PHYLAX_TRACK=' "$ENVF" | cut -d= -f2-)
 AGENT=$(grep -E '^PHYLAX_AGENT_CODE_PATH=' "$ENVTMP" | cut -d= -f2-)
-HOTKEY=$(grep -E '^WALLET_HOTKEY=' "$ENVF" | cut -d= -f2-)
-LABEL=$(grep -E '^PHYLAX_MINER_LABEL=' "$ENVF" | cut -d= -f2-)
+HOTKEY=$(grep -E '^WALLET_HOTKEY=' "$ENVTMP" | cut -d= -f2-)
+LABEL=$(grep -E '^PHYLAX_MINER_LABEL=' "$ENVTMP" | cut -d= -f2-)
 [ -n "$TRACK" ] || { echo "PHYLAX_TRACK is empty in .env — pick a track first" >&2; exit 1; }
 [ -n "$HOTKEY" ] || { echo "WALLET_HOTKEY is empty in $ENVF — create a dedicated hotkey first" >&2; exit 1; }
 [ -n "$LABEL" ] || { echo "PHYLAX_MINER_LABEL is empty in $ENVF" >&2; exit 1; }
@@ -47,7 +55,7 @@ LABEL=$(grep -E '^PHYLAX_MINER_LABEL=' "$ENVF" | cut -d= -f2-)
 if [ "${PHYLAX_SKIP_PREFLIGHT:-}" = "1" ]; then
   echo "preflight skipped (PHYLAX_SKIP_PREFLIGHT=1)" >&2
 else
-  PHYLAX_AGENT="$AGENT" bash "$LAB/scripts/preflight.sh"
+  PHYLAX_AGENT="$AGENT" PHYLAX_TRACK="$TRACK" bash "$LAB/scripts/preflight.sh"
 fi
 
 echo "  env    $ENVF"

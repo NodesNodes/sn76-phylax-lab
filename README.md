@@ -14,13 +14,18 @@ change. The upstream subnet checkout remains read-only and lives separately at
 |---|---|---|---:|---|
 | `packages` | `sn76` | `phylax-packages-v1` | 1 | active |
 | `mcp_servers` | `sn76_1` | `phylax-mcp-v1` | 1 | active |
-| `skills` | `sn76_2` | `phylax-skills-v1` | 1 | active, pending evaluation |
-| `repositories` | not created | `phylax-repositories-v1` | — | prepared |
+| `skills` | `sn76_2` | `phylax-skills-v1` | 2 | active, pending evaluation |
+| `repositories` | `sn76_3` | `phylax-repositories-independent` | 2 | active, qualifies next round |
+| `repositories` | `sn76_4` | `phylax-repositories-wave6` | 2 | active, qualifies next round |
 
-All profiles use the same file and entrypoint:
+All profiles use entrypoint `agent_main`. Skills and repositories now have
+standalone sources; packages and MCP retain the universal dispatcher:
 
 ```text
-agent/phylax_agent.py → agent_main(context)
+agent/phylax_skills_agent.py       → skills
+agent/phylax_repositories_agent.py → repositories (`sn76_4`)
+agent/phylax_repositories_agent_v2.py → independent repositories (`sn76_3`)
+agent/phylax_agent.py              → packages / mcp_servers
 ```
 
 Active packages/MCP v1 SHA-256:
@@ -29,50 +34,74 @@ Active packages/MCP v1 SHA-256:
 3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03
 ```
 
-Active skills v1 and the prepared repositories candidate use SHA-256:
+Active standalone skills v2 uses deploy SHA-256:
 
 ```text
-41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb
+b9cfc4559d09e18faf9bc979b7371a436858e0477a960caf7675882e45e3c371
 ```
 
-The server accepted all three active v1 uploads on 2026-07-29. Their held-out
-evaluation scores were not available at submission time. Repositories remains
-the only prepared, unsubmitted profile.
-
-## Why one file serves four tracks
-
-Each hotkey is registered to exactly one specialization, while `agent_main`
-dispatches internally on the track supplied by the validator:
+The parallel standalone repositories wave-6 upload uses SHA-256:
 
 ```text
-                         agent/phylax_agent.py
-                                  │
-          ┌───────────────┬───────────────┼───────────────┐
-          │               │               │               │
-       packages      mcp_servers        skills       repositories
-          │               │               │               │
-     lifecycle +      tool surface    context +        code audit +
-    supply chain       + behavior     action plane     supply chain
+09ded08564b767df5d834bd725049ff22785ad5b4ab99e4e9bcfeb8bba7732b6
 ```
 
-Each registration shares code but uses a separate env file, wallet hotkey and
-public label. See [agent/profiles.json](agent/profiles.json) for the
-machine-readable profile state.
+The independent repositories v2 upload on `sn76_3` uses SHA-256:
+
+```text
+88ce916c3272ba2a64e73350d68ba9f9799420c313b0387cf9101f3abe7317f6
+```
+
+The server accepted the first three v1 uploads on 2026-07-29, then repositories
+v1, standalone skills v2 and the parallel repositories wave-5 profile on
+2026-07-30. The stronger wave-6 version replaced wave-5 on `sn76_4` later that
+day and qualifies for its first round. A separate surface-oriented
+implementation then replaced repositories v1 on `sn76_3`; both profiles now
+qualify for the next round. The packages wave-4 candidate is verified locally
+but has not replaced the active packages v1 upload.
+
+## Profile architecture
+
+Each hotkey is registered to exactly one specialization. Skills and
+repositories are isolated into dependency-free agents; the universal source
+dispatches packages and MCP:
+
+```text
+ agent/phylax_skills_agent.py  agent/phylax_agent.py  agent/phylax_repositories_agent.py
+              │                    │          │                    │
+           skills               packages     MCP             repositories
+              │                    │          │                    │
+       context + action          lifecycle    tool             code audit +
+           plane                 + supply   surface           supply chain
+```
+
+Each registration uses a separate env file, wallet hotkey and public label.
+See [agent/profiles.json](agent/profiles.json) for the machine-readable profile
+state.
 
 ## Repository map
 
 | Path | Purpose |
 |---|---|
-| `agent/phylax_agent.py` | Submitted static analyzer and its track dispatcher |
+| `agent/phylax_agent.py` | Universal packages/MCP analyzer and dispatcher |
+| `agent/phylax_skills_agent.py` | Generated self-contained skills source |
+| `agent/phylax_repositories_agent.py` | Self-contained repositories audit source |
 | `agent/profiles.json` | Active and prepared specialization profiles |
 | `configs/` | Safe tracked env templates without wallet or API keys |
 | `agent/baseline/` | Frozen upstream reference agent used for comparisons |
 | `corpus/` | Labelled known-good and known-bad adversarial artifacts |
 | `harness/local_eval.py` | Offline runner using upstream scoring code |
 | `harness/trackcheck.py` | Expanded skills/packages/MCP structural regression suite |
+| `harness/packages_wave4_trackcheck.py` | Package fact/chain correlation A/B suite |
+| `harness/repositories_trackcheck.py` | Repository source/sink, lockfile and secret A/B suite |
+| `harness/repositories_wave3_trackcheck.py` | GitHub Actions and modern lockfile A/B suite |
+| `harness/repositories_wave4_trackcheck.py` | Backdoor, trusted-config, scope, secret-flow and supply-chain A/B suite |
+| `harness/repositories_wave5_trackcheck.py` | Polyglot install-hook, magic-auth and exact-secret A/B suite |
 | `harness/rulecheck.py` | Focused rule-level checks |
 | `harness/fuzz.py` | Cross-track robustness and contract fuzzing |
 | `scripts/preflight.sh` | Import, report-contract and determinism checks in the sandbox image |
+| `scripts/extract_skills_agent.py` | Extracts the skills dependency closure from the universal source |
+| `scripts/extract_repositories_agent.py` | Extracts the repositories dependency closure from the universal source |
 | `scripts/submit.sh` | Signed agent registration and upload |
 | `scripts/status.sh` | On-chain registration status for the selected env |
 | `scripts/watch_window.sh` | Read-only submission-window monitoring |
@@ -101,8 +130,8 @@ cp configs/repositories.env.example .env.repositories
 |---|---|---|---|
 | `.env` | packages | `phylax-packages-v1` | `sn76` |
 | `.env.mcp` | mcp_servers | `phylax-mcp-v1` | `sn76_1` |
-| `.env.skills` | skills | `phylax-skills-v1` | `sn76_2` |
-| `.env.repositories` | repositories | `phylax-repositories-v1` | fill after creation |
+| `.env.skills` | skills, standalone deploy | `phylax-skills-v1` | `sn76_2` |
+| `.env.repositories` | repositories, standalone deploy | `phylax-repositories-v1` | `sn76_3` |
 
 `PHYLAX_EXECUTION_API_KEY` is required by the official registration client and
 is sent as part of the agent upload. Keep it only in the ignored env files; do
@@ -114,6 +143,14 @@ Run the fast structural suites first:
 
 ```bash
 python3 harness/trackcheck.py
+python3 harness/trackcheck.py --track skills --agent build/phylax_skills_agent.py
+python3 harness/skills_precision_trackcheck.py --agent build/phylax_skills_agent.py
+python3 harness/packages_wave4_trackcheck.py
+python3 harness/repositories_trackcheck.py
+python3 harness/repositories_wave3_trackcheck.py
+python3 harness/repositories_wave4_trackcheck.py --agent build/phylax_repositories_agent.py
+python3 harness/repositories_wave5_trackcheck.py --agent build/phylax_repositories_agent.py
+python3 harness/repositories_wave6_trackcheck.py --agent build/phylax_repositories_agent_wave6.py
 python3 harness/rulecheck.py
 python3 harness/fuzz.py
 ```
@@ -167,6 +204,22 @@ PHYLAX_ENV_FILE=.env.repositories bash scripts/status.sh
 Submission is an outbound, state-changing action. The script runs preflight
 before upload and asks for confirmation unless `-y` is provided:
 
+Working-source documentation must remain local. Never submit the annotated
+`agent/phylax_agent.py` directly: build a deployment artifact that removes
+Python comments and runtime docstrings while preserving executable code, then
+point the selected profile at that artifact:
+
+```bash
+# Standalone skills source and deploy artifact
+python3 scripts/extract_skills_agent.py
+python3 scripts/build_submission_agent.py \
+  agent/phylax_skills_agent.py build/phylax_skills_agent.py
+
+# Universal repositories deploy artifact
+python3 scripts/build_submission_agent.py \
+  agent/phylax_agent.py build/phylax_agent_repositories.py
+```
+
 ```bash
 # Packages
 bash scripts/submit.sh
@@ -200,9 +253,10 @@ The complete source-by-source rationale and validator A/B history are in
 
 ## Release evidence
 
-| Check | Current shared-code result |
+| Check | Current analyzer result |
 |---|---|
 | Expanded packages suite | 1.0000 — TP 17, TN 11, FP 0, FN 0 |
+| Packages wave-4 trackcheck | 1.0000 — previous candidate 0.4130 |
 | Expanded MCP suite | 1.0000 — TP 17, TN 18, FP 0, FN 0 |
 | Public packages corpus | 1.0000 |
 | Public MCP corpus | 1.0000 |
@@ -210,7 +264,12 @@ The complete source-by-source rationale and validator A/B history are in
 | Expanded skills corpus | 1.0000 — TP 8, TN 6, FP 0, FN 0 |
 | Skills source trackcheck | 1.0000 — TP 13, TN 12, FP 0, FN 0 |
 | Public repositories corpus | 0.7600 |
-| Expanded repositories corpus | 0.8285 — 9 repositories |
+| Expanded repositories corpus | 0.8372 — 9 repositories |
+| Repository wave-2 trackcheck | 0.7275 — all 4 malicious twins at 1.0000; previous candidate 0.3837 |
+| Repository wave-3 trackcheck | 0.7275 — all 4 malicious twins at 1.0000; wave-2 candidate 0.3056 |
+| Repository wave-4 trackcheck | 0.7022 — all malicious twins 1.0000; all benign twins clean |
+| Repository wave-5 trackcheck | 0.6986 — all malicious twins 1.0000; all benign twins clean |
+| Repository wave-6 trackcheck | 0.6950 — all malicious twins 1.0000; all benign twins clean |
 | Real skills precision smoke | 892 artifacts; 0 decisions changed |
 | Rulecheck | 22/22 |
 | Fuzz | 88/88 |
@@ -225,6 +284,12 @@ For the full chronology:
 - [source research and v1 submission receipts](notes/2026-07-29-source-research.md)
 - [skills and repositories profiles](notes/2026-07-29-future-profiles.md)
 - [skills second source pass](notes/2026-07-29-skills-wave2.md)
+- [packages wave-4 fact correlation](notes/2026-07-29-packages-wave4.md)
+- [repositories wave-2 improvements](notes/2026-07-29-repositories-wave2.md)
+- [repositories wave-3 CI/workflow improvements](notes/2026-07-29-repositories-wave3.md)
+- [repositories wave-6 and sn76_4 v2 receipt](notes/2026-07-30-repositories-wave6.md)
+- [independent repositories agent and sn76_3 v2 receipt](notes/2026-07-30-repositories-independent.md)
+- [100 security repositories research queue](notes/2026-07-29-security-repositories-100.md)
 
 ## Safety rails
 

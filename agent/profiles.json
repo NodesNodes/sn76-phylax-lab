@@ -2,11 +2,16 @@
   "code_path": "agent/phylax_agent.py",
   "entrypoint": "agent_main",
   "upstream_verified": "f455ac6",
-  "working_code_sha256": "41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb",
+  "working_code_sha256": "d57544e8d48831fabf134ca8c45b7cef57f42eb71a89b4aec87f10b49f0d3509",
   "active_code_sha256_by_track": {
     "packages": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03",
     "mcp_servers": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03",
-    "skills": "41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb"
+    "skills": "b9cfc4559d09e18faf9bc979b7371a436858e0477a960caf7675882e45e3c371",
+    "repositories": "09ded08564b767df5d834bd725049ff22785ad5b4ab99e4e9bcfeb8bba7732b6"
+  },
+  "active_repository_code_sha256_by_hotkey": {
+    "5CCsj1evozyL9ekW6sjZE79dUUfV2XNSTYpFu83hAq9tqVcL": "88ce916c3272ba2a64e73350d68ba9f9799420c313b0387cf9101f3abe7317f6",
+    "5EjmzJs6rKhka6CrgQbEa72aFzjuwwETBwGRQLpTMuHAigmi": "09ded08564b767df5d834bd725049ff22785ad5b4ab99e4e9bcfeb8bba7732b6"
   },
   "profiles": [
     {
@@ -15,7 +20,8 @@
       "label": "phylax-packages-v1",
       "state": "active",
       "version": 1,
-      "submitted_code_sha256": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03"
+      "submitted_code_sha256": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03",
+      "candidate_code_sha256": "d57544e8d48831fabf134ca8c45b7cef57f42eb71a89b4aec87f10b49f0d3509"
     },
     {
       "track": "mcp_servers",
@@ -33,18 +39,53 @@
       "wallet_hotkey": "sn76_2",
       "hotkey": "5G483fsyFaTmy8VGbhMAMWLBwvNCkPFxk1VVDgHrkdCUyb5M",
       "state": "active",
-      "version": 1,
+      "version": 2,
       "agent_id": "7ac152758be44ad2b20530dc52dbd101",
-      "submitted_code_sha256": "41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb"
+      "submitted_code_sha256": "b9cfc4559d09e18faf9bc979b7371a436858e0477a960caf7675882e45e3c371",
+      "source_path": "agent/phylax_skills_agent.py",
+      "deploy_path": "build/phylax_skills_agent.py",
+      "source_sha256": "6ab65e9e710738bc6e46f7e4ca4aa34a6bdf3f33843c58539c975703b05a7203"
     },
     {
       "track": "repositories",
       "env": ".env.repositories",
       "template": "configs/repositories.env.example",
-      "label": "phylax-repositories-v1",
-      "state": "prepared",
-      "version": null,
-      "candidate_code_sha256": "41af77c111ebadfe3cf31c992139c4744bc0dc002948344b15330b8a965dedbb"
+      "label": "phylax-repositories-independent",
+      "wallet_hotkey": "sn76_3",
+      "hotkey": "5CCsj1evozyL9ekW6sjZE79dUUfV2XNSTYpFu83hAq9tqVcL",
+      "state": "active",
+      "evaluation_state": "pending",
+      "eligibility_state": "updated",
+      "qualifies_next_round": true,
+      "version": 2,
+      "agent_id": "ab89e82868f341b8babdee9ff5de70f3",
+      "submitted_at": "2026-07-30T18:30:05.785108Z",
+      "submitted_code_sha256": "88ce916c3272ba2a64e73350d68ba9f9799420c313b0387cf9101f3abe7317f6",
+      "source_path": "agent/phylax_repositories_agent_v2.py",
+      "deploy_path": "agent/phylax_repositories_agent_v2.py",
+      "source_sha256": "88ce916c3272ba2a64e73350d68ba9f9799420c313b0387cf9101f3abe7317f6",
+      "similarity_to_sn76_4": 0.04728339450561673,
+      "previous_round_score": 0.74575,
+      "previous_visible_rank": 2,
+      "rounds": [2]
+    },
+    {
+      "track": "repositories",
+      "env": ".env.repositories",
+      "label": "phylax-repositories-wave6",
+      "wallet_hotkey": "sn76_4",
+      "hotkey": "5EjmzJs6rKhka6CrgQbEa72aFzjuwwETBwGRQLpTMuHAigmi",
+      "state": "active",
+      "evaluation_state": "pending",
+      "version": 2,
+      "agent_id": "a98faa7507024a2284f1dd04414c6dad",
+      "submitted_at": "2026-07-30T18:16:39.555999Z",
+      "submitted_code_sha256": "09ded08564b767df5d834bd725049ff22785ad5b4ab99e4e9bcfeb8bba7732b6",
+      "source_path": "agent/phylax_repositories_agent.py",
+      "deploy_path": "build/phylax_repositories_agent_wave6.py",
+      "source_sha256": "09ded08564b767df5d834bd725049ff22785ad5b4ab99e4e9bcfeb8bba7732b6",
+      "qualifies_next_round": true,
+      "parallel_to_hotkey": "5CCsj1evozyL9ekW6sjZE79dUUfV2XNSTYpFu83hAq9tqVcL"
     }
   ]
 }

@@ -19,6 +19,39 @@ The local env files are ignored by Git and the tracked templates contain no
 secrets. `.env.skills` now uses `sn76_2`; `.env.repositories` still has a blank
 `WALLET_HOTKEY`.
 
+## Universal code versus network identities
+
+The subnet does not expose the internal analyzer layers as independent agents.
+It sees one registered specialization per hotkey, invokes `agent_main(context)`
+for that specialization and scores the result only inside the corresponding
+track and emission pool.
+
+The resulting architecture decision is:
+
+```text
+one shared agent/phylax_agent.py
+├── packages hotkey       → context.track == "packages"
+├── mcp_servers hotkey    → context.track == "mcp_servers"
+├── skills hotkey         → context.track == "skills"
+└── repositories hotkey   → context.track == "repositories"
+```
+
+Therefore, competing in all four tracks requires four separately registered
+hotkeys/profiles. They may upload the same universal source file: the
+track-specific dispatch activates only the relevant analyzer, while the shared
+normalization, fact extraction, correlation and reporting layers remain one
+maintained implementation.
+
+Duplicate-code screening is performed among participants in the same track.
+Sharing an identical source across different tracks is consequently valid, but
+two identical or near-identical hotkeys must not be entered into the same
+track. A track-specific source fork should be introduced only if measured CPU,
+size or precision constraints justify the maintenance cost.
+
+In short: one universal layered engine, four independent network profiles.
+Repositories still needs its own hotkey and registration before it can become
+the fourth active profile.
+
 ## Production information available
 
 The official upstream checkout was advanced from `42cbf00` to current

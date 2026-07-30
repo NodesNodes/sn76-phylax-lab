@@ -964,6 +964,11 @@ def materialise(root: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agent", default="agent/phylax_agent.py")
+    parser.add_argument(
+        "--track",
+        choices=("skills", "packages", "mcp_servers"),
+        help="run only one specialization (useful for standalone agents)",
+    )
     args = parser.parse_args()
     agent = Path(args.agent)
     if not agent.is_absolute():
@@ -974,7 +979,10 @@ def main() -> int:
             src, work = Path(src_tmp), Path(work_tmp)
             materialise(src)
             failed = False
-            for track in ("skills", "packages", "mcp_servers"):
+            tracks = (args.track,) if args.track else (
+                "skills", "packages", "mcp_servers"
+            )
+            for track in tracks:
                 corpus = local_eval.load_corpus(src, track, work)
                 score, rows, detail = local_eval.score_detonation_track(
                     agent, corpus, track, "trackcheck", 1, 60, False

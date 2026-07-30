@@ -14,6 +14,8 @@ set -euo pipefail
 LAB="$(cd "$(dirname "$0")/.." && pwd)"
 AGENT="${PHYLAX_AGENT:-$LAB/agent/phylax_agent.py}"
 IMAGE="${PHYLAX_SANDBOX_IMAGE:-phylax-agent:reference}"
+TRACK="${PHYLAX_TRACK:-}"
+TRACKS="${TRACK:-skills mcp_servers packages repositories}"
 
 [ -f "$AGENT" ] || { echo "no agent at $AGENT" >&2; exit 1; }
 
@@ -43,16 +45,24 @@ fi
 
 # 2. Does agent_main survive a minimal dispatch, and return the shape the
 #    validator destructures without checking?
-if out=$(docker run --rm -v "$AGENT:/agent_under_test.py:ro" --entrypoint python3 "$IMAGE" \
+if out=$(docker run --rm -e PHYLAX_PREFLIGHT_TRACK="${TRACK:-skills}" \
+           -v "$AGENT:/agent_under_test.py:ro" --entrypoint python3 "$IMAGE" \
            -c "
-import sys, tempfile
+import os, sys, tempfile
 sys.path.insert(0, '/')
 from agent_under_test import agent_main
-r = agent_main({'track': 'skills', 'artifact_dir': tempfile.mkdtemp(), 'probe': {}})
+r = agent_main({
+    'track': os.environ['PHYLAX_PREFLIGHT_TRACK'],
+    'artifact_dir': tempfile.mkdtemp(),
+    'probe': {},
+})
 assert isinstance(r, dict), 'report is not a dict'
 assert str(r['verdict']['decision']) in ('ALLOW', 'WARN', 'BLOCK'), r['verdict']
 assert isinstance(r['evidence'], dict) and isinstance(r['findings'], list)
-assert 'proof_of_execution' in r['evidence'], 'no proof_of_execution'
+if os.environ['PHYLAX_PREFLIGHT_TRACK'] != 'repositories':
+    assert 'proof_of_execution' in r['evidence'], 'no proof_of_execution'
+else:
+    assert isinstance(r['evidence'].get('audit'), dict), 'no repository audit evidence'
 print('ok')
 " 2>&1); then
   note "agent_main returns a report" "OK"
@@ -64,13 +74,14 @@ fi
 
 # 3. Byte-for-byte agreement across repetitions. The validator takes a median
 #    ordinal over reps, so a flaky agent loses tasks it detected correctly.
-if out=$(docker run --rm -v "$AGENT:/agent_under_test.py:ro" -v "$LAB/corpus:/corpus:ro" \
+if out=$(docker run --rm -e PHYLAX_PREFLIGHT_TRACKS="$TRACKS" \
+           -v "$AGENT:/agent_under_test.py:ro" -v "$LAB/corpus:/corpus:ro" \
            --entrypoint python3 "$IMAGE" -c "
-import hashlib, json, sys, pathlib
+import hashlib, json, os, sys, pathlib
 sys.path.insert(0, '/')
 from agent_under_test import agent_main
 bad = []
-for track in ('skills', 'mcp_servers', 'packages', 'repositories'):
+for track in os.environ['PHYLAX_PREFLIGHT_TRACKS'].split():
     for label in ('known-good', 'known-bad'):
         base = pathlib.Path('/corpus') / track / label
         if not base.is_dir():
