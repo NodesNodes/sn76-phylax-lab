@@ -6,13 +6,13 @@
   "active_code_sha256_by_track": {
     "packages": "ae41c7eb9a02a9ab90c8dd7e7646e829dfe2b15d8395082ef69eb41062a3487c",
     "mcp_servers": "ff3b309ae8623479e57d49232728f414b32e86a4282998c3f4b6bbf4e8483e9a",
-    "skills": "c450118cfe45bc68c665cd6c9ebe290a552a7219c518f922b14b7d6e12b274aa",
+    "skills": "89f88254af894dcf03b3a368d10be7a4921781a1dca767a8edf7aff9e1b99039",
     "repositories": "f666e70c524a4bb2ec6e0379a60e4b6a4977ba38608540b45fa724b9f5df2f5d"
   },
   "active_llm_code_sha256_by_profile": {
     "sn76": "ae41c7eb9a02a9ab90c8dd7e7646e829dfe2b15d8395082ef69eb41062a3487c",
     "sn76_1": "ff3b309ae8623479e57d49232728f414b32e86a4282998c3f4b6bbf4e8483e9a",
-    "sn76_2": "c450118cfe45bc68c665cd6c9ebe290a552a7219c518f922b14b7d6e12b274aa",
+    "sn76_2": "89f88254af894dcf03b3a368d10be7a4921781a1dca767a8edf7aff9e1b99039",
     "sn76_3": "b2e34da97cee38d0913c79a1f58faf520b4fb505b46e2eba9ac98def4b1ac2f3",
     "sn76_4": "f666e70c524a4bb2ec6e0379a60e4b6a4977ba38608540b45fa724b9f5df2f5d"
   },
@@ -74,14 +74,15 @@
       "wallet_hotkey": "sn76_2",
       "hotkey": "5G483fsyFaTmy8VGbhMAMWLBwvNCkPFxk1VVDgHrkdCUyb5M",
       "state": "active",
-      "version": 6,
+      "evaluation_state": "pending",
+      "version": 7,
       "agent_id": "7ac152758be44ad2b20530dc52dbd101",
-      "submitted_at": "2026-07-31T09:46:12.382936Z",
-      "submitted_code_sha256": "c450118cfe45bc68c665cd6c9ebe290a552a7219c518f922b14b7d6e12b274aa",
+      "submitted_at": "2026-07-31T18:19:16.384693Z",
+      "submitted_code_sha256": "89f88254af894dcf03b3a368d10be7a4921781a1dca767a8edf7aff9e1b99039",
       "source_path": "agent/phylax_skills_agent.py",
       "deploy_path": "build/phylax_skills_agent.py",
-      "source_sha256": "d6d252eb81f1afa2edc09b75c7673de1330510fdc6593818b9488cb6a6e7ab83",
-      "previous_submitted_code_sha256": "48d067ce856803e27fcd7706840aa5fca0f24eec630be6b19b09a367c1f44bc3",
+      "source_sha256": "670112439735578015eb1029258d7955e44fc509d7881743dfeca7a3c8593421",
+      "previous_submitted_code_sha256": "c450118cfe45bc68c665cd6c9ebe290a552a7219c518f922b14b7d6e12b274aa",
       "inference_model": "mistralai/mistral-small-3.2-24b-instruct",
       "rounds": [2]
     },

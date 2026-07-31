@@ -47,11 +47,16 @@ _LLM_TERMS = (
     "private key", "os.environ", "process.env", "subprocess", "child_process",
     "eval(", "exec(", "curl ", "wget ", "base64", "postinstall", "preinstall",
     "pull_request_target", "workflow_dispatch", "chmod", "/dev/tcp", "webhook",
+    "cve-", "security advisory", "vulnerable dependency",
 )
 _LLM_MANIFESTS = frozenset({
     "package.json", "package-lock.json", "pyproject.toml", "setup.py",
     "requirements.txt", "cargo.toml", "go.mod", "composer.json", "pom.xml",
-    "gemfile", "dockerfile",
+    "gemfile", "dockerfile", "npm-shrinkwrap.json", "yarn.lock",
+    "pnpm-lock.yaml", "pnpm-lock.yml", "pipfile.lock", "poetry.lock",
+    "uv.lock", "pdm.lock", "cargo.lock", "composer.lock", "gemfile.lock",
+    "gradle.lockfile", "packages.lock.json", "package.resolved", "go.sum",
+    "mix.lock",
 })
 _LLM_REPOSITORY_SUPPLY_TYPES = {
     "typosquat": "typosquat",
@@ -196,10 +201,25 @@ def _llm_dossier(report, files, track):
                      "capability_manifest"),
         "repositories": ("audit", "vulnerabilities", "supply_chain", "secrets"),
     }.get(track, ("action_plane", "context_plane", "capability_manifest"))
+    static_evidence = {
+        key: _llm_bound(evidence.get(key)) for key in keys if key in evidence
+    }
+    if track == "packages" and isinstance(evidence.get("supply_chain"), dict):
+        supply = evidence["supply_chain"]
+        bounded_supply = _llm_bound(supply)
+        dependencies = supply.get("dependencies")
+        if isinstance(bounded_supply, dict) and isinstance(dependencies, list):
+
+
+
+            bounded_supply["dependencies"] = [
+                _llm_bound(item, 2) for item in dependencies[:64]
+            ]
+        static_evidence["supply_chain"] = bounded_supply
     static = {
         "verdict": _llm_bound(report.get("verdict") or {}),
         "findings": _llm_bound(report.get("findings") or []),
-        "evidence": {key: _llm_bound(evidence.get(key)) for key in keys if key in evidence},
+        "evidence": static_evidence,
     }
     budget = {"skills": 14_000, "packages": 22_000, "repositories": 36_000}[track]
     ranked = []
@@ -482,8 +502,23 @@ def _llm_package_candidates(grounded, result, file_index, evidence):
         package = str(raw.get("package") or "").strip().lower()
         related = str(raw.get("related") or "").strip()
         if canonical == "dependency_cve":
+            dependency = next(
+                (
+                    item for item in (supply.get("dependencies") or [])
+                    if isinstance(item, dict)
+                    and str(item.get("name") or "").strip().lower() == package
+                ),
+                None,
+            )
+            version = str((dependency or {}).get("version") or "")
+            concrete = bool((dependency or {}).get("resolved")) or bool(re.fullmatch(
+                r"\s*(?:==|=|v)?\s*\d+(?:\.\d+){0,3}"
+                r"(?:[-+][A-Za-z0-9.-]+)?\s*",
+                version,
+            ))
             if (
                 package not in dependency_names
+                or not concrete
                 or not re.fullmatch(r"(?i)CVE-\d{4}-\d{4,7}", related)
             ):
                 continue
@@ -1006,7 +1041,42 @@ _INTERPRETED = re.compile(
     r"(?:^|[\s`\"'(&|;])(?:python[23]?|node|deno|bun|ruby|perl|php|"
     r"(?:ba|z|k)?sh|pwsh|powershell)\s+(?:-[\w-]+\s+)*([\w./\-]+)")
 
-def _promote_interpreted(files: list[_File]) -> dict[str, str]:
+_CONTEXT_LOAD_VERB = re.compile(
+    r"(?i)\b(?:read|load|open|consult|review|use|apply|follow|import|"
+    r"reference|see|parse|process|inspect)\b"
+)
+
+
+def _active_skill_context(files: list[_File]) -> set[str]:
+
+    by_rel = {f.rel: f for f in files}
+    active = {
+        f.rel for f in files
+        if f.stem in _ENTRYPOINT_STEMS and f.kind in ("doc", "data", "other")
+    }
+    queue = list(sorted(active))
+    while queue:
+        source = by_rel[queue.pop(0)]
+        lines = source.lines
+        for index, line in enumerate(lines):
+            window = "\n".join(lines[max(0, index - 1):min(len(lines), index + 2)])
+            if not _CONTEXT_LOAD_VERB.search(window):
+                continue
+            normal = window.replace("\\", "/")
+            for rel, target in by_rel.items():
+                if rel in active or target.kind == "code":
+                    continue
+                base = rel.rsplit("/", 1)[-1]
+                directory = rel.rsplit("/", 1)[0] + "/" if "/" in rel else ""
+                if rel in normal or base in normal or (directory and directory in normal):
+                    active.add(rel)
+                    queue.append(rel)
+    return active
+
+
+def _promote_interpreted(
+    files: list[_File], instruction_rels: set[str] | None = None
+) -> dict[str, str]:
 
 
 
@@ -1019,7 +1089,11 @@ def _promote_interpreted(files: list[_File]) -> dict[str, str]:
     by_rel = {f.rel: f for f in files}
     promoted: dict[str, str] = {}
     for f in files:
-        if not (f.is_instruction or f.kind == "manifest"):
+        if instruction_rels is not None:
+            instruction = f.rel in instruction_rels
+        else:
+            instruction = f.is_instruction or f.kind == "manifest"
+        if not instruction:
             continue
         for ref in _INTERPRETED.findall(f.text):
             target = ref.replace("\\", "/").lstrip("./")
@@ -1626,8 +1700,6 @@ _TITLES = {
 
 def _scan_injection(f: _File) -> list[_Signal]:
 
-    if not f.is_instruction and f.kind not in ("manifest", "data"):
-        return []
     out: list[_Signal] = []
     seen: set[str] = set()
     for category, pattern, weight in _INJECTION:
@@ -1663,7 +1735,7 @@ def _scan_injection(f: _File) -> list[_Signal]:
             "Base64 payload decodes to injected instructions: " + excerpt,
             "HIGH", 0.60,
         ))
-    concealed = _hidden_unicode(f.text) if f.is_instruction else None
+    concealed = _hidden_unicode(f.text)
     if concealed is not None and not _benign_hidden_unicode(f, concealed[0]):
         offset, kind = concealed
         out.append(_Signal(
@@ -1745,14 +1817,16 @@ def _verdict(risk: float) -> tuple[str, int]:
         return "WARN", int(35 + 30 * risk)
     return "ALLOW", max(2, int(20 * risk))
 
-def _context_plane(signals: list[_Signal]) -> dict:
+def _context_plane(
+    signals: list[_Signal], loaded_context: list[str] | None = None
+) -> dict:
     return {
         "injected_instructions": [
             {"type": s.category, "excerpt": s.title, "location": s.file}
             for s in sorted(signals, key=lambda s: (s.file, s.line, s.category))
             if s.plane == "context"
         ],
-        "loaded_context": [],
+        "loaded_context": sorted(loaded_context or []),
     }
 
 _ACTIVE_CODE_VERB = re.compile(
@@ -1768,10 +1842,10 @@ _NEGATED_CODE_EXEC = re.compile(
 
 _SKILL_PERMISSION_OVERREACH = re.compile(
     r"(?is)(?:"
-    r"(?:request|require|grant|obtain|enable|assume)\s+.{0,55}"
-    r"(?:unrestricted|unlimited|full|wildcard|\ball\b).{0,55}"
-    r"(?:tools?|permissions?|filesystem|network|credentials?|system|shell)"
-    r"(?:\s+(?:access|permissions?))?"
+    r"(?:request|require|grant|obtain|enable|assume)\s+.{0,40}"
+    r"(?:unrestricted|unlimited|full|wildcard|\ball\b)\s+"
+    r"(?:tools?|permissions?|(?:filesystem|network|credentials?|system|shell)"
+    r"\s+(?:access|permissions?))"
     r"|(?:run|execute|operate)\s+.{0,45}"
     r"(?:as\s+)?(?:root|administrator|sudo).{0,80}"
     r"(?:without|disable|skip|bypass).{0,35}"
@@ -1782,6 +1856,16 @@ _SKILL_PERMISSION_OVERREACH = re.compile(
     r"(?:without|skip|bypass).{0,35}"
     r"(?:asking\s+(?:the\s+)?(?:user|human)\s+for\s+)?"
     r"(?:approval|confirmation|review|consent)"
+    r")"
+)
+
+_SKILL_GOVERNANCE_SAFE_CONTEXT = re.compile(
+    r"(?i)(?:"
+    r"\[(?:warn|fail|risk|finding)\]|"
+    r"(?:warn|flag|detect|report|reject|prevent|restrict|reduce|"
+    r"dangerous|excessive|overly\s+permissive|least\s+privilege)\b|"
+    r"(?:mitigation|hardening|protection|security\s+control)s?\b|"
+    r"require\s+.{0,35}\bapproval\b"
     r")"
 )
 
@@ -1828,7 +1912,10 @@ def _scan_skill_governance(f: _File) -> list[_Signal]:
         for match in pattern.finditer(f.text):
             line_start = f.text.rfind("\n", 0, match.start()) + 1
             prefix = f.text[max(line_start, match.start() - 100):match.start()]
+            window = _text_window(f.text, match.start(), 3)
             if _SKILL_GOVERNANCE_NEGATION.search(prefix):
+                continue
+            if _SKILL_GOVERNANCE_SAFE_CONTEXT.search(window):
                 continue
             if _benign_instruction_mention(f, match, category):
                 continue
@@ -1840,7 +1927,9 @@ def _scan_skill_governance(f: _File) -> list[_Signal]:
             break
     return out
 
-def _active_skill_code(files: list[_File], promoted: dict[str, str]) -> set[str]:
+def _active_skill_code(
+    files: list[_File], promoted: dict[str, str], instruction_rels: set[str] | None = None
+) -> set[str]:
 
 
 
@@ -1853,7 +1942,11 @@ def _active_skill_code(files: list[_File], promoted: dict[str, str]) -> set[str]
     code = {f.rel: f for f in files if f.kind == "code"}
     active = set(promoted)
     for instruction in files:
-        if not instruction.is_instruction:
+        if instruction_rels is not None:
+            is_instruction = instruction.rel in instruction_rels
+        else:
+            is_instruction = instruction.is_instruction
+        if not is_instruction:
             continue
         lines = instruction.lines
         for index in range(len(lines)):
@@ -1869,14 +1962,347 @@ def _active_skill_code(files: list[_File], promoted: dict[str, str]) -> set[str]
                     active.add(rel)
     return active
 
+
+_SKILL_JS_LOCAL_IMPORT = re.compile(
+    r"(?:require\s*\(\s*|\bfrom\s+)[\"'](\.{1,2}/[^\"']+)[\"']"
+)
+
+
+def _resolve_skill_code_ref(
+    current: _File, ref: str, by_rel: dict[str, _File]
+) -> _File | None:
+    target = ref.replace("\\", "/").strip()
+    base = current.rel.rsplit("/", 1)[0] if "/" in current.rel else ""
+    while target.startswith("../"):
+        target = target[3:]
+        base = base.rsplit("/", 1)[0] if "/" in base else ""
+    target = target[2:] if target.startswith("./") else target
+    raw = f"{base}/{target}" if base and not target.startswith(base + "/") else target
+    raw = raw.strip("/")
+    candidates = [raw]
+    for suffix in (".py", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
+        candidates.append(raw + suffix)
+    candidates.extend((raw + "/__init__.py", raw + "/index.js", raw + "/index.ts"))
+    return next((by_rel[name] for name in candidates if name in by_rel), None)
+
+
+def _active_skill_import_closure(files: list[_File], entries: set[str]) -> set[str]:
+
+    by_rel = {f.rel: f for f in files if f.kind == "code"}
+    active = {rel for rel in entries if rel in by_rel}
+    queue = list(sorted(active))
+    while queue:
+        f = by_rel[queue.pop(0)]
+        targets: list[_File] = []
+        if f.suffix == ".py":
+            try:
+                tree = ast.parse(f.text)
+            except (SyntaxError, ValueError):
+                tree = None
+            if tree is not None:
+                for node in ast.walk(tree):
+                    if isinstance(node, ast.Import):
+                        refs = [alias.name.replace(".", "/") for alias in node.names]
+                    elif isinstance(node, ast.ImportFrom):
+                        prefix = "../" * max(0, node.level - 1)
+                        module = (node.module or "").replace(".", "/")
+                        refs = [prefix + module] if module else [
+                            prefix + alias.name for alias in node.names
+                        ]
+                    else:
+                        continue
+                    for ref in refs:
+                        hit = _resolve_skill_code_ref(f, ref, by_rel)
+                        if hit is not None:
+                            targets.append(hit)
+        else:
+            for ref in _SKILL_JS_LOCAL_IMPORT.findall(f.text):
+                hit = _resolve_skill_code_ref(f, ref, by_rel)
+                if hit is not None:
+                    targets.append(hit)
+        for target in targets:
+            if target.rel not in active:
+                active.add(target.rel)
+                queue.append(target.rel)
+    return active
+
+
+_JS_VALUE_ASSIGNMENT = re.compile(
+    r"(?s)\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(.{1,1200}?);"
+)
+_JS_EGRESS_CALL = re.compile(
+    r"(?i)(?:axios\.(?:post|put|patch|request)|fetch|"
+    r"https?\.request|\.post)\s*\("
+)
+_JS_REQUIRE_ALIAS = re.compile(
+    r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"
+    r"require\s*\(\s*[\"'](\.{1,2}/[^\"']+)[\"']\s*\)"
+)
+_JS_FUNCTION_BLOCK = re.compile(
+    r"(?:\bfunction\s*[A-Za-z_$]*\s*\([^)]*\)|"
+    r"(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|"
+    r"\b[A-Za-z_$][\w$]*\s*\([^)]*\))\s*\{"
+)
+_JS_CONCRETE_SECRET_READ = re.compile(
+    r"(?is)(?:readFileSync|readFile|createReadStream|Deno\.readTextFile|"
+    r"Deno\.readFile|Bun\.file)\s*\([^)]{0,300}(?:\.ssh[/\\]|"
+    r"\.aws[/\\]credentials|\.netrc|\.npmrc|\.pypirc|\.env\b|"
+    r"wallet\.dat|/etc/shadow)"
+)
+
+
+def _js_sensitive_expression(text: str) -> bool:
+    return bool(_ENV_BULK.search(text) or _JS_CONCRETE_SECRET_READ.search(text))
+
+
+def _js_function_ranges(text: str) -> list[tuple[int, int]]:
+    ranges = []
+    for match in _JS_FUNCTION_BLOCK.finditer(text):
+        opening = text.find("{", match.start(), match.end())
+        depth, quote, escaped = 0, "", False
+        for index in range(opening, len(text)):
+            char = text[index]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+                continue
+            if char in ("'", '"', "`"):
+                quote = char
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    ranges.append((opening, index))
+                    break
+    return ranges
+
+
+def _js_scope_at(
+    ranges: list[tuple[int, int]], position: int
+) -> tuple[int, int] | None:
+    hits = [bounds for bounds in ranges if bounds[0] < position < bounds[1]]
+    return min(hits, key=lambda bounds: bounds[1] - bounds[0]) if hits else None
+
+
+def _js_credential_chain(f: _File) -> bool:
+    if f.suffix not in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
+        return False
+    ranges = _js_function_ranges(f.text)
+    sources: dict[str, tuple[int, int] | None] = {}
+    for match in _JS_VALUE_ASSIGNMENT.finditer(f.text):
+        if _js_sensitive_expression(match.group(2)):
+            sources[match.group(1)] = _js_scope_at(ranges, match.start())
+    for match in _JS_EGRESS_CALL.finditer(f.text):
+        window = f.text[match.start():match.start() + 1600]
+        sink_scope = _js_scope_at(ranges, match.start())
+        direct = _ENV_BULK.search(window) or _JS_CONCRETE_SECRET_READ.search(window)
+        if direct is not None and _js_scope_at(
+            ranges, match.start() + direct.start()
+        ) == sink_scope:
+            return True
+        if any(
+            scope == sink_scope and re.search(rf"\b{re.escape(name)}\b", window)
+            for name, scope in sources.items()
+        ):
+            return True
+    return False
+
+
+def _js_cross_file_credential_flow(
+    files: list[_File], active_code: set[str]
+) -> tuple[str, str, int] | None:
+    by_rel = {f.rel: f for f in files if f.rel in active_code}
+    readers = {f.rel for f in by_rel.values() if _js_sensitive_expression(f.text)}
+    senders = {
+        f.rel for f in by_rel.values()
+        if _scan_file_capabilities(f) & _EGRESS
+    }
+    for coordinator in by_rel.values():
+        aliases = {}
+        for match in _JS_REQUIRE_ALIAS.finditer(coordinator.text):
+            target = _resolve_skill_code_ref(coordinator, match.group(2), by_rel)
+            if target is not None:
+                aliases[match.group(1)] = target.rel
+        for reader, reader_rel in aliases.items():
+            if reader_rel not in readers:
+                continue
+            for sender, sender_rel in aliases.items():
+                if sender_rel not in senders:
+                    continue
+                match = re.search(
+                    rf"\b{re.escape(sender)}(?:\.[A-Za-z_$][\w$]*)?\s*\("
+                    rf"[^;]{{0,700}}\b{re.escape(reader)}"
+                    rf"(?:\.[A-Za-z_$][\w$]*)?\s*\(",
+                    coordinator.text,
+                )
+                if match is not None:
+                    return reader_rel, coordinator.rel, coordinator.text.count(
+                        "\n", 0, match.start()
+                    ) + 1
+    return None
+
+
+def _python_function_roles(f: _File) -> tuple[set[str], set[str]]:
+    readers, senders = set(), set()
+    try:
+        tree = ast.parse(f.text)
+    except (SyntaxError, ValueError):
+        return readers, senders
+    aliases = _python_import_aliases(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = "\n".join(
+            ast.get_source_segment(f.text, child) or "" for child in node.body
+        )
+        if _ENV_BULK.search(body) or (
+            _FACT_SECRET_PATH.search(body)
+            and re.search(r"(?:open|read_text|read_bytes)\s*\(", body)
+        ):
+            readers.add(node.name)
+        parameters = {
+            arg.arg for arg in node.args.args + node.args.posonlyargs + node.args.kwonlyargs
+        }
+        for call in (child for child in ast.walk(node) if isinstance(child, ast.Call)):
+            path = aliases.get(_python_call_path(call.func), _python_call_path(call.func))
+            if path not in _FACT_NETWORK_SINKS:
+                continue
+            if any(name in parameters for arg in _fact_call_arguments(call) for name in _expr_names(arg)):
+                senders.add(node.name)
+    return readers, senders
+
+
+def _python_cross_file_credential_flow(
+    files: list[_File], active_code: set[str]
+) -> tuple[str, str, int] | None:
+    by_rel = {f.rel: f for f in files if f.rel in active_code and f.suffix == ".py"}
+    roles = {rel: _python_function_roles(f) for rel, f in by_rel.items()}
+    for coordinator in by_rel.values():
+        try:
+            tree = ast.parse(coordinator.text)
+        except (SyntaxError, ValueError):
+            continue
+        imported: dict[str, tuple[str, str]] = {}
+        for node in tree.body:
+            if isinstance(node, ast.ImportFrom):
+                prefix = "../" * max(0, node.level - 1)
+                ref = prefix + (node.module or "").replace(".", "/")
+                target = _resolve_skill_code_ref(coordinator, ref, by_rel)
+                if target is not None:
+                    for alias in node.names:
+                        imported[alias.asname or alias.name] = (target.rel, alias.name)
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    target = _resolve_skill_code_ref(
+                        coordinator, alias.name.replace(".", "/"), by_rel
+                    )
+                    if target is not None:
+                        imported[alias.asname or alias.name.split(".")[-1]] = (
+                            target.rel, "*"
+                        )
+
+        def role(call, index: int) -> tuple[str, str] | None:
+            path = _python_call_path(call.func)
+            head, _, tail = path.partition(".")
+            item = imported.get(head)
+            if item is None:
+                return None
+            rel, symbol = item
+            name = tail if symbol == "*" else symbol
+            return (rel, name) if name in roles.get(rel, (set(), set()))[index] else None
+
+        scopes = [tree.body] + [
+            node.body for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        for scope in scopes:
+            tainted: dict[str, tuple[str, str]] = {}
+            for node in _fact_walk(scope):
+                if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    value = node.value
+                    if isinstance(value, ast.Call):
+                        source = role(value, 0)
+                        if source is not None:
+                            targets = _fact_targets(node)
+                            for name in targets:
+                                tainted[name] = source
+                if not isinstance(node, ast.Call) or role(node, 1) is None:
+                    continue
+                nested = next(
+                    (role(child, 0) for arg in _fact_call_arguments(node)
+                     for child in ast.walk(arg) if isinstance(child, ast.Call) and role(child, 0)),
+                    None,
+                )
+                source = nested or next(
+                    (tainted[name] for arg in _fact_call_arguments(node)
+                     for name in _expr_names(arg) if name in tainted),
+                    None,
+                )
+                if source is not None:
+                    return source[0], coordinator.rel, getattr(node, "lineno", 1)
+    return None
+
+
+_QUOTED_FLOW_PATH = re.compile(
+    r"[\"']((?:/tmp/|\./|\.\./|[A-Za-z0-9_.-]+/)[^\"'\n]{1,180})[\"']"
+)
+_MIME_LIKE_PATH = re.compile(
+    r"(?i)^(?:application|audio|font|image|message|model|multipart|text|video)/"
+    r"[A-Za-z0-9.+-]+$"
+)
+
+
+def _cross_file_path_flow(
+    files: list[_File], active_code: set[str], code_caps: dict[str, set[str]]
+) -> tuple[str, str] | None:
+    paths = {
+        f.rel: {
+            value for value in _QUOTED_FLOW_PATH.findall(f.text)
+            if not _FACT_SECRET_PATH.search(value)
+            and not value.startswith(("http://", "https://"))
+            and not _MIME_LIKE_PATH.fullmatch(value)
+        }
+        for f in files if f.rel in active_code
+    }
+    readers = [
+        rel for rel, caps in code_caps.items()
+        if rel in active_code and caps & _SECRET_READ and "WRITE_FILE" in caps
+    ]
+    senders = [
+        rel for rel, caps in code_caps.items()
+        if rel in active_code and caps & _EGRESS
+    ]
+    for reader in readers:
+        for sender in senders:
+            if reader == sender:
+
+
+
+                continue
+            if paths.get(reader, set()) & paths.get(sender, set()):
+                return reader, sender
+    return None
+
 def _analyse_skills(files: list[_File], context: dict) -> dict:
     probe = context.get("probe") or {}
     obs_caps = _observed_caps(context)
     phases = _phases(context)
-    promoted = _promote_interpreted(files)
-    active_code = _active_skill_code(files, promoted)
+    active_context = _active_skill_context(files)
+    promoted = _promote_interpreted(files, active_context)
+    direct_code = _active_skill_code(files, promoted, active_context)
+    active_code = _active_skill_import_closure(files, direct_code)
+    active_phase_caps = set().union(*(
+        _phase_caps(phases, rel) for rel in active_code
+    )) if active_code else set()
+    effective_obs_caps = active_phase_caps if phases else obs_caps
 
     static_caps: set[str] = set()
+    active_static_caps: set[str] = set()
     signals: list[_Signal] = []
     risk = 0.0
     code_caps: dict[str, set[str]] = {}
@@ -1884,7 +2310,12 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
     for f in files:
         caps = _scan_file_capabilities(f)
         static_caps |= caps
-        file_signals = _scan_injection(f) + _scan_skill_governance(f)
+        if f.rel in active_code:
+            active_static_caps |= caps
+        file_signals = (
+            _scan_injection(f) + _scan_skill_governance(f)
+            if f.rel in active_context else []
+        )
         rug_lines = {
             signal.line for signal in file_signals if signal.category == "rug_pull"
         }
@@ -1916,6 +2347,10 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
                 )
                 for chain in _package_python_fact_chains(f, "runtime")
             )
+        elif credential_exfiltration and f.suffix in (
+            ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"
+        ):
+            credential_exfiltration = _js_credential_chain(f)
         if (
             f.kind == "code"
             and f.rel in active_code
@@ -1962,32 +2397,31 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
 
 
 
-
-
-
-    readers = sorted(
-        r for r, c in code_caps.items()
-        if r in active_code and c & _SECRET_READ and "WRITE_FILE" in c
+    explicit_flow = (
+        _python_cross_file_credential_flow(files, active_code)
+        or _js_cross_file_credential_flow(files, active_code)
     )
-    senders = sorted(
-        r for r, c in code_caps.items() if r in active_code and c & _EGRESS
-    )
-    if readers and senders and not any(_chain(code_caps[r]) for r in readers):
+    path_flow = _cross_file_path_flow(files, active_code, code_caps)
+    if explicit_flow or path_flow:
+        reader = explicit_flow[0] if explicit_flow else path_flow[0]
+        coordinator = explicit_flow[1] if explicit_flow else path_flow[1]
         risk = max(risk, 0.85)
         signals.append(_Signal(
-            "READ_SECRETS", "transitive_poisoning", "action", readers[0], 1,
-            "Credentials read in one bundled script and sent to an external host "
-            "by another: " + ", ".join(readers + senders),
+            "READ_SECRETS", "transitive_poisoning", "action", reader, 1,
+            "Credentials flow from one bundled module to an external sender via "
+            + coordinator,
             "CRIT", 0.85,
         ))
 
 
 
     for rel in sorted(phases):
+        if rel not in active_code:
+            continue
         pcaps = _phase_caps(phases, rel)
         if pcaps & _DAMNING or _chain(pcaps):
             risk = max(risk, 0.90)
-            if not obs_caps:
+            if not effective_obs_caps:
                 signals.append(_Signal(
                     "", "transitive_poisoning", "action", rel, 1,
                     "Observed at runtime: " + ", ".join(sorted(pcaps & (_DAMNING | _EGRESS | _SECRET_READ))),
@@ -2000,12 +2434,14 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
 
 
 
-    tainted = {s.file for s in signals if s.plane == "action"} | {
-        rel for rel in phases if _phase_caps(phases, rel) & (_DAMNING | _SECRET_READ)
+    flow_carriers = {explicit_flow[1]} if explicit_flow else set()
+    tainted = {s.file for s in signals if s.plane == "action"} | flow_carriers | {
+        rel for rel in phases
+        if rel in active_code and _phase_caps(phases, rel) & (_DAMNING | _SECRET_READ)
     }
     if tainted:
         for f in files:
-            if not f.is_instruction:
+            if f.rel not in active_context:
                 continue
 
 
@@ -2051,28 +2487,40 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
     if any(cats & {"instruction_injection", "context_injection"} and "transitive_leakage" in cats
            for cats in by_file.values()):
         risk = max(risk, 0.85)
-    if obs_caps & _DAMNING:
+    if effective_obs_caps & _DAMNING:
         risk = max(risk, 0.85)
-    if _chain(obs_caps):
+    if _chain(effective_obs_caps):
         risk = max(risk, 0.90)
 
 
-    if injection and (obs_caps | static_caps) & {"EXEC_SHELL", "INSTALL_PACKAGE", "SCHEDULE_JOB"}:
+    if injection and (effective_obs_caps | active_static_caps) & {
+        "EXEC_SHELL", "INSTALL_PACKAGE", "SCHEDULE_JOB"
+    }:
         risk = max(risk, 0.75)
-    if not risk and (obs_caps | static_caps) & _EGRESS:
+    if not risk and (effective_obs_caps | active_static_caps) & _EGRESS:
         risk = 0.30
 
     decision, score = _verdict(risk)
-    caps = _canonical(obs_caps | static_caps | {s.cap for s in signals if s.cap}, "skills")
+    caps = _canonical(
+        effective_obs_caps | active_static_caps | {s.cap for s in signals if s.cap},
+        "skills",
+    )
     return {
         "verdict": {"decision": decision, "risk_score": score, "confidence": 0.8},
         "evidence": {
             "proof_of_execution": _proof_of_execution(probe),
-            "action_plane": {"capabilities": caps, "observed_capabilities": sorted(obs_caps)},
-            "context_plane": _context_plane(signals),
+            "action_plane": {
+                "capabilities": caps,
+                "observed_capabilities": sorted(effective_obs_caps),
+            },
+            "context_plane": _context_plane(signals, list(active_context)),
             "capability_manifest": [c["capability"] for c in caps],
+            "analysis_scope": {
+                "active_context": sorted(active_context),
+                "active_code": sorted(active_code),
+            },
         },
-        "findings": _emit_findings(signals, obs_caps),
+        "findings": _emit_findings(signals, effective_obs_caps),
     }
 
 def _python_call_path(node) -> str:
@@ -2653,4 +3101,16 @@ def agent_main(context: dict | None = None) -> dict:
             },
             "findings": [],
         }
-    return _llm_enhance(report, files, context, "skills")
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), dict) else {}
+    scope = evidence.get("analysis_scope") if isinstance(evidence, dict) else {}
+    scope = scope if isinstance(scope, dict) else {}
+    llm_scope = {
+        str(rel) for key in ("active_context", "active_code")
+        for rel in (scope.get(key) or [])
+    }
+    has_skill_entry = any(f.stem == "skill" for f in files)
+    llm_files = [
+        f for f in files
+        if not has_skill_entry or not llm_scope or f.rel in llm_scope
+    ]
+    return _llm_enhance(report, llm_files, context, "skills")

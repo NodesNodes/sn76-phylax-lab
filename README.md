@@ -14,7 +14,7 @@ change. The upstream subnet checkout remains read-only and lives separately at
 |---|---|---|---:|---|
 | `packages` | `sn76` | `phylax-packages-standalone-v2` | 7 | active, pending evaluation |
 | `mcp_servers` | `sn76_1` | `phylax-mcp-v1` | 3 | active, pending evaluation |
-| `skills` | `sn76_2` | `phylax-skills-v1` | 6 | active, pending evaluation |
+| `skills` | `sn76_2` | `phylax-skills-v1` | 7 | active, pending evaluation |
 | `repositories` | `sn76_3` | `phylax-repositories-independent` | 6 | active, pending evaluation |
 | `repositories` | `sn76_4` | `phylax-repositories-wave6` | 6 | active, pending evaluation |
 
@@ -45,7 +45,7 @@ ff3b309ae8623479e57d49232728f414b32e86a4282998c3f4b6bbf4e8483e9a
 Active standalone skills deploy SHA-256:
 
 ```text
-c450118cfe45bc68c665cd6c9ebe290a552a7219c518f922b14b7d6e12b274aa
+89f88254af894dcf03b3a368d10be7a4921781a1dca767a8edf7aff9e1b99039
 ```
 
 The four hardened version 5 releases were accepted on 2026-07-31:
@@ -85,6 +85,13 @@ The packages precision and supply-chain release was accepted later that day:
 17:23:09Z  packages/sn76          v7  ae41c7eb9a02a9ab90c8dd7e7646e829dfe2b15d8395082ef69eb41062a3487c
 ```
 
+The skills reference-flow and precision release followed after its full
+real-skill smoke gate:
+
+```text
+18:19:16Z  skills/sn76_2          v7  89f88254af894dcf03b3a368d10be7a4921781a1dca767a8edf7aff9e1b99039
+```
+
 These artifacts support both the current miner-key proxy and roadmap issue #8,
 where the validator owns the credential. They omit `Authorization` when
 `context.inference.api_key` is absent but still make the nonce-metered request.
@@ -104,6 +111,9 @@ repositories profiles, and version 3 for MCP. All five registry rows are active
 with evaluation state pending. Packages version 7 subsequently added
 scope-correct import/runtime analysis, broader resolved-lockfile inventory and
 interval-based CVE matching without changing the active profile layout.
+Skills version 7 then added referenced-context and import closure, explicit
+Python/JavaScript cross-file secret-flow analysis, and tighter governance,
+runtime and shared-path attribution.
 
 ## Profile architecture
 
@@ -162,6 +172,7 @@ state.
 | `harness/packages_wave8_supply_chain_trackcheck.py` | Modern lockfile inventory and interval-CVE A/B suite |
 | `harness/packages_llm_trackcheck.py` | Package LLM category, path, line and dependency grounding |
 | `harness/skills_wave4_trackcheck.py` | Autonomous offensive-tool governance A/B suite |
+| `harness/skills_wave5_flow_precision_trackcheck.py` | Referenced context, cross-file flow and precision A/B suite |
 | `harness/repositories_wave7_trackcheck.py` | Interprocedural shell-wrapper and HexStrike-shaped A/B suite |
 | `harness/repositories_wave8_trackcheck.py` | Import-grounded cross-file shell-wrapper A/B suite |
 | `harness/repositories_trackcheck.py` | Repository source/sink, lockfile and secret A/B suite |
@@ -391,6 +402,7 @@ The complete source-by-source rationale and validator A/B history are in
 | Skills source trackcheck | 1.0000 — TP 13, TN 12, FP 0, FN 0 |
 | Skills wave-3 governance | 1.0000 — TP 4, TN 4, FP 0, FN 0, quality 1.0 |
 | Skills wave-4 autonomous tools | 1.0000 — TP 2, TN 2, FP 0, FN 0, quality 1.0 |
+| Skills wave-5 reference/flow precision | 1.0000 — TP 5, TN 9, FP 0, FN 0, quality 1.0 |
 | Public repositories corpus | 0.7600 |
 | Expanded repositories corpus | 0.8372 — 9 repositories |
 | Repository wave-2 trackcheck | 0.7275 — all 4 malicious twins at 1.0000; previous candidate 0.3837 |
@@ -400,7 +412,7 @@ The complete source-by-source rationale and validator A/B history are in
 | Repository wave-6 trackcheck | 0.6950 — all malicious twins 1.0000; all benign twins clean |
 | Repository wave-7 shell wrappers | 1.0000 — 2 malicious wrappers found; 2 benign twins clean |
 | Repository wave-8 cross-file wrappers | 1.0000 — baseline 0.5000; 2 missed flows recovered; 2 benign twins clean |
-| Real skills precision smoke | 892 artifacts; 0 decisions changed |
+| Real skills precision smoke | 1,260 artifacts; all ALLOW after three held-out precision regressions were fixed |
 | Rulecheck | 22/22 |
 | Fuzz | 88/88 |
 | Sandbox preflight | passed on Python 3.11.15; deterministic across 3 reps |
@@ -421,6 +433,7 @@ For the full chronology:
 - [four version 5 submission receipts](notes/2026-07-31-version5-submission-receipts.md)
 - [validator-owned inference key compatibility](notes/2026-07-31-llm-validator-key-compat.md)
 - [packages v7 precision, supply-chain coverage and receipt](notes/2026-07-31-packages-v7.md)
+- [skills v7 reference-flow precision and receipt](notes/2026-07-31-skills-v7.md)
 - [repositories wave-2 improvements](notes/2026-07-29-repositories-wave2.md)
 - [repositories wave-3 CI/workflow improvements](notes/2026-07-29-repositories-wave3.md)
 - [repositories wave-6 and sn76_4 v2 receipt](notes/2026-07-30-repositories-wave6.md)
