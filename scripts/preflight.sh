@@ -13,6 +13,10 @@ set -euo pipefail
 
 LAB="$(cd "$(dirname "$0")/.." && pwd)"
 AGENT="${PHYLAX_AGENT:-$LAB/agent/phylax_agent.py}"
+case "$AGENT" in
+  /*) ;;
+  *) AGENT="$LAB/$AGENT" ;;
+esac
 IMAGE="${PHYLAX_SANDBOX_IMAGE:-phylax-agent:reference}"
 TRACK="${PHYLAX_TRACK:-}"
 TRACKS="${TRACK:-skills mcp_servers packages repositories}"

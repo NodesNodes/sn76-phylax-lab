@@ -4,24 +4,42 @@
   "upstream_verified": "f455ac6",
   "working_code_sha256": "d57544e8d48831fabf134ca8c45b7cef57f42eb71a89b4aec87f10b49f0d3509",
   "active_code_sha256_by_track": {
-    "packages": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03",
+    "packages": "99906d06927b18449fee968fcee3a7241b583e47af4919ffb62e768344603198",
     "mcp_servers": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03",
-    "skills": "b9cfc4559d09e18faf9bc979b7371a436858e0477a960caf7675882e45e3c371",
-    "repositories": "09ded08564b767df5d834bd725049ff22785ad5b4ab99e4e9bcfeb8bba7732b6"
+    "skills": "c9cba1fd220bb47b92c38eecde33e513bf66c3f861e78aebd21c37d88d14d8a0",
+    "repositories": "1974a01e1d0e7cb7154c5467e8930216dc35dfbcecf25917acc7cc355f43ebec"
+  },
+  "active_llm_code_sha256_by_profile": {
+    "sn76": "99906d06927b18449fee968fcee3a7241b583e47af4919ffb62e768344603198",
+    "sn76_2": "c9cba1fd220bb47b92c38eecde33e513bf66c3f861e78aebd21c37d88d14d8a0",
+    "sn76_3": "b53dc5de24f91d8295b438a1de0ca9be96a29651b87da8399cc80cf5fd9c5ff2",
+    "sn76_4": "1974a01e1d0e7cb7154c5467e8930216dc35dfbcecf25917acc7cc355f43ebec"
   },
   "active_repository_code_sha256_by_hotkey": {
-    "5CCsj1evozyL9ekW6sjZE79dUUfV2XNSTYpFu83hAq9tqVcL": "88ce916c3272ba2a64e73350d68ba9f9799420c313b0387cf9101f3abe7317f6",
-    "5EjmzJs6rKhka6CrgQbEa72aFzjuwwETBwGRQLpTMuHAigmi": "09ded08564b767df5d834bd725049ff22785ad5b4ab99e4e9bcfeb8bba7732b6"
+    "5CCsj1evozyL9ekW6sjZE79dUUfV2XNSTYpFu83hAq9tqVcL": "b53dc5de24f91d8295b438a1de0ca9be96a29651b87da8399cc80cf5fd9c5ff2",
+    "5EjmzJs6rKhka6CrgQbEa72aFzjuwwETBwGRQLpTMuHAigmi": "1974a01e1d0e7cb7154c5467e8930216dc35dfbcecf25917acc7cc355f43ebec"
   },
   "profiles": [
     {
       "track": "packages",
       "env": ".env",
-      "label": "phylax-packages-v1",
+      "label": "phylax-packages-standalone-v2",
+      "wallet_hotkey": "sn76",
+      "hotkey": "5HgUJ5SFRRBqbgM84wiZhqeqJhCCC5Au1bXFipjXKCRM8WtL",
       "state": "active",
-      "version": 1,
-      "submitted_code_sha256": "3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03",
-      "candidate_code_sha256": "d57544e8d48831fabf134ca8c45b7cef57f42eb71a89b4aec87f10b49f0d3509"
+      "evaluation_state": "pending",
+      "eligibility_state": "new",
+      "qualifies_next_round": true,
+      "version": 4,
+      "agent_id": "5e2c55cf27df4d7581eefe39bff2dc1e",
+      "submitted_at": "2026-07-31T05:37:59.681168Z",
+      "submitted_code_sha256": "99906d06927b18449fee968fcee3a7241b583e47af4919ffb62e768344603198",
+      "source_path": "agent/phylax_packages_agent.py",
+      "deploy_path": "build/phylax_packages_agent.py",
+      "source_sha256": "c315b1f404c5b07d566699001511995ef180f91dabc6378eb4af8ee9ecb7848d",
+      "similarity_to_universal": 0.5612232866617539,
+      "previous_submitted_code_sha256": "542da322b1894e83c28b5c2a0befe6527121941c8b38c28e467166665ba55764",
+      "inference_model": "openai/gpt-4.1-mini"
     },
     {
       "track": "mcp_servers",
@@ -39,12 +57,16 @@
       "wallet_hotkey": "sn76_2",
       "hotkey": "5G483fsyFaTmy8VGbhMAMWLBwvNCkPFxk1VVDgHrkdCUyb5M",
       "state": "active",
-      "version": 2,
+      "version": 3,
       "agent_id": "7ac152758be44ad2b20530dc52dbd101",
-      "submitted_code_sha256": "b9cfc4559d09e18faf9bc979b7371a436858e0477a960caf7675882e45e3c371",
+      "submitted_at": "2026-07-31T05:36:55.108999Z",
+      "submitted_code_sha256": "c9cba1fd220bb47b92c38eecde33e513bf66c3f861e78aebd21c37d88d14d8a0",
       "source_path": "agent/phylax_skills_agent.py",
       "deploy_path": "build/phylax_skills_agent.py",
-      "source_sha256": "6ab65e9e710738bc6e46f7e4ca4aa34a6bdf3f33843c58539c975703b05a7203"
+      "source_sha256": "b251878808899ca9c037c34e7032ccf8e461c096f8964d04fd8e4f8fec6bac3f",
+      "previous_submitted_code_sha256": "b9cfc4559d09e18faf9bc979b7371a436858e0477a960caf7675882e45e3c371",
+      "inference_model": "mistralai/mistral-small-3.2-24b-instruct",
+      "rounds": [2]
     },
     {
       "track": "repositories",
@@ -57,17 +79,19 @@
       "evaluation_state": "pending",
       "eligibility_state": "updated",
       "qualifies_next_round": true,
-      "version": 2,
+      "version": 3,
       "agent_id": "ab89e82868f341b8babdee9ff5de70f3",
-      "submitted_at": "2026-07-30T18:30:05.785108Z",
-      "submitted_code_sha256": "88ce916c3272ba2a64e73350d68ba9f9799420c313b0387cf9101f3abe7317f6",
+      "submitted_at": "2026-07-31T05:37:17.027285Z",
+      "submitted_code_sha256": "b53dc5de24f91d8295b438a1de0ca9be96a29651b87da8399cc80cf5fd9c5ff2",
       "source_path": "agent/phylax_repositories_agent_v2.py",
-      "deploy_path": "agent/phylax_repositories_agent_v2.py",
-      "source_sha256": "88ce916c3272ba2a64e73350d68ba9f9799420c313b0387cf9101f3abe7317f6",
+      "deploy_path": "build/phylax_repositories_agent.py",
+      "source_sha256": "eacf520422d5a3b8bebb77ae94f6e04eaecd14d52c688b1acfb8ac39e3e53eca",
       "similarity_to_sn76_4": 0.04728339450561673,
       "previous_round_score": 0.74575,
       "previous_visible_rank": 2,
-      "rounds": [2]
+      "rounds": [2],
+      "previous_submitted_code_sha256": "88ce916c3272ba2a64e73350d68ba9f9799420c313b0387cf9101f3abe7317f6",
+      "inference_model": "openai/gpt-4.1-mini"
     },
     {
       "track": "repositories",
@@ -77,15 +101,18 @@
       "hotkey": "5EjmzJs6rKhka6CrgQbEa72aFzjuwwETBwGRQLpTMuHAigmi",
       "state": "active",
       "evaluation_state": "pending",
-      "version": 2,
+      "version": 3,
       "agent_id": "a98faa7507024a2284f1dd04414c6dad",
-      "submitted_at": "2026-07-30T18:16:39.555999Z",
-      "submitted_code_sha256": "09ded08564b767df5d834bd725049ff22785ad5b4ab99e4e9bcfeb8bba7732b6",
+      "submitted_at": "2026-07-31T05:37:33.417707Z",
+      "submitted_code_sha256": "1974a01e1d0e7cb7154c5467e8930216dc35dfbcecf25917acc7cc355f43ebec",
       "source_path": "agent/phylax_repositories_agent.py",
       "deploy_path": "build/phylax_repositories_agent_wave6.py",
-      "source_sha256": "09ded08564b767df5d834bd725049ff22785ad5b4ab99e4e9bcfeb8bba7732b6",
+      "source_sha256": "b302c1e675e4ef08f015da6476d72045ce98ec6a72045916cbfffc075f605ca8",
       "qualifies_next_round": true,
-      "parallel_to_hotkey": "5CCsj1evozyL9ekW6sjZE79dUUfV2XNSTYpFu83hAq9tqVcL"
+      "parallel_to_hotkey": "5CCsj1evozyL9ekW6sjZE79dUUfV2XNSTYpFu83hAq9tqVcL",
+      "previous_submitted_code_sha256": "09ded08564b767df5d834bd725049ff22785ad5b4ab99e4e9bcfeb8bba7732b6",
+      "inference_model": "openai/gpt-4.1-mini",
+      "rounds": []
     }
   ]
 }

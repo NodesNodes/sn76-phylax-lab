@@ -1,5 +1,15 @@
 # Agent profiles
 
+The active LLM-enabled set contains four submissions across three tracks:
+packages (`sn76`), skills (`sn76_2`), repositories-independent (`sn76_3`) and
+repositories-wave6 (`sn76_4`). MCP remains on the legacy universal dispatcher
+and is outside this rollout.
+
+Every active non-MCP deployment is a single Python file. During the build,
+`phylax_llm_layer.py` is inlined into packages and both repository sources;
+skills carries the equivalent layer directly. The model is called only through
+the validator-provided metered inference proxy.
+
 All four specializations use one submitted source file:
 `phylax_agent.py`, entrypoint `agent_main`.
 

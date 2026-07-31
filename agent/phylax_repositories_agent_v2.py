@@ -10,8 +10,22 @@ from __future__ import annotations
 
 import json
 import re
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any
+
+# BEGIN PHYLAX_LLM_LAYER_IMPORT
+import importlib.util as _llm_importlib
+_llm_spec = _llm_importlib.spec_from_file_location(
+    "phylax_llm_layer", Path(__file__).with_name("phylax_llm_layer.py")
+)
+if _llm_spec is None or _llm_spec.loader is None:
+    raise ImportError("cannot load phylax_llm_layer")
+_llm_module = _llm_importlib.module_from_spec(_llm_spec)
+_llm_spec.loader.exec_module(_llm_module)
+_llm_enhance = _llm_module._llm_enhance
+# END PHYLAX_LLM_LAYER_IMPORT
 
 
 MAX_REPOSITORY_BYTES = 2_500_000
@@ -857,7 +871,7 @@ def agent_main(context: dict | None = None) -> dict:
     try:
         repo.load()
         if not repo.files:
-            return {
+            report = {
                 "verdict": {"decision": "WARN", "risk_score": 50, "confidence": 0.1},
                 "evidence": {
                     "audit": {"files_analysed": 0, "bytes_analysed": 0, "dependency_files": []},
@@ -870,9 +884,10 @@ def agent_main(context: dict | None = None) -> dict:
                 },
                 "findings": [],
             }
-        return _report(repo)
+        else:
+            report = _report(repo)
     except Exception as exc:
-        return {
+        report = {
             "verdict": {"decision": "WARN", "risk_score": 50, "confidence": 0.1},
             "evidence": {
                 "audit": {"files_analysed": max(1, len(repo.files)), "dependency_files": []},
@@ -886,3 +901,4 @@ def agent_main(context: dict | None = None) -> dict:
             },
             "findings": [],
         }
+    return _llm_enhance(report, repo.files, context, "repositories")

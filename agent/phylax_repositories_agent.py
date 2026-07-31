@@ -18,7 +18,21 @@ import socket
 import subprocess
 import tokenize
 import unicodedata
+import urllib.error
+import urllib.request
 from pathlib import Path
+
+# BEGIN PHYLAX_LLM_LAYER_IMPORT
+import importlib.util as _llm_importlib
+_llm_spec = _llm_importlib.spec_from_file_location(
+    "phylax_llm_layer", Path(__file__).with_name("phylax_llm_layer.py")
+)
+if _llm_spec is None or _llm_spec.loader is None:
+    raise ImportError("cannot load phylax_llm_layer")
+_llm_module = _llm_importlib.module_from_spec(_llm_spec)
+_llm_spec.loader.exec_module(_llm_module)
+_llm_enhance = _llm_module._llm_enhance
+# END PHYLAX_LLM_LAYER_IMPORT
 
 _MAX_FILE_BYTES = 512_000
 
@@ -3602,10 +3616,12 @@ def agent_main(context: dict | None = None) -> dict:
 
     context = context if isinstance(context, dict) else {}
     artifact_dir = str(context.get("artifact_dir") or "/task/artifact")
+    files = []
     try:
-        return _analyse_repositories(_read_files(artifact_dir))
+        files = _read_files(artifact_dir)
+        report = _analyse_repositories(files)
     except Exception as exc:
-        return {
+        report = {
             "verdict": {"decision": "WARN", "risk_score": 50, "confidence": 0.1},
             "evidence": {
                 "audit": {"files_analysed": 0, "dependency_files": []},
@@ -3621,3 +3637,4 @@ def agent_main(context: dict | None = None) -> dict:
             },
             "findings": [],
         }
+    return _llm_enhance(report, files, context, "repositories")
