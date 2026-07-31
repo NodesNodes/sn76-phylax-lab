@@ -12,7 +12,7 @@ change. The upstream subnet checkout remains read-only and lives separately at
 
 | Track | Wallet hotkey | Agent label | Version | Status |
 |---|---|---|---:|---|
-| `packages` | `sn76` | `phylax-packages-standalone-v2` | 6 | active, pending evaluation |
+| `packages` | `sn76` | `phylax-packages-standalone-v2` | 7 | active, pending evaluation |
 | `mcp_servers` | `sn76_1` | `phylax-mcp-v1` | 3 | active, pending evaluation |
 | `skills` | `sn76_2` | `phylax-skills-v1` | 6 | active, pending evaluation |
 | `repositories` | `sn76_3` | `phylax-repositories-independent` | 6 | active, pending evaluation |
@@ -33,7 +33,7 @@ agent/phylax_repositories_agent_v2.py → independent repositories (`sn76_3`)
 Active standalone packages v2 deploy SHA-256:
 
 ```text
-b10e00029099a18b8e3c7aed54c8034990b355bdf2970906d9c2b077fba3f875
+ae41c7eb9a02a9ab90c8dd7e7646e829dfe2b15d8395082ef69eb41062a3487c
 ```
 
 Active standalone MCP deploy SHA-256:
@@ -79,6 +79,12 @@ The validator-owned-key compatibility releases were accepted on 2026-07-31:
 09:46:35Z  repositories/sn76_4    v6  f666e70c524a4bb2ec6e0379a60e4b6a4977ba38608540b45fa724b9f5df2f5d
 ```
 
+The packages precision and supply-chain release was accepted later that day:
+
+```text
+17:23:09Z  packages/sn76          v7  ae41c7eb9a02a9ab90c8dd7e7646e829dfe2b15d8395082ef69eb41062a3487c
+```
+
 These artifacts support both the current miner-key proxy and roadmap issue #8,
 where the validator owns the credential. They omit `Authorization` when
 `context.inference.api_key` is absent but still make the nonce-metered request.
@@ -95,7 +101,9 @@ On 2026-07-31 the server accepted the LLM-enabled releases for all five active
 profiles, the hardened version 5 successors, and finally the dual-mode
 validator-owned-key releases: version 6 for packages, skills and both
 repositories profiles, and version 3 for MCP. All five registry rows are active
-with evaluation state pending.
+with evaluation state pending. Packages version 7 subsequently added
+scope-correct import/runtime analysis, broader resolved-lockfile inventory and
+interval-based CVE matching without changing the active profile layout.
 
 ## Profile architecture
 
@@ -150,6 +158,8 @@ state.
 | `harness/packages_wave4_trackcheck.py` | Package fact/chain correlation A/B suite |
 | `harness/packages_wave5_trackcheck.py` | Polyglot package build/install lifecycle A/B suite |
 | `harness/packages_wave6_trackcheck.py` | Exact-pin and resolved-lockfile CVE A/B suite |
+| `harness/packages_wave7_precision_trackcheck.py` | Import/runtime scope and reachable exfiltration A/B suite |
+| `harness/packages_wave8_supply_chain_trackcheck.py` | Modern lockfile inventory and interval-CVE A/B suite |
 | `harness/packages_llm_trackcheck.py` | Package LLM category, path, line and dependency grounding |
 | `harness/skills_wave4_trackcheck.py` | Autonomous offensive-tool governance A/B suite |
 | `harness/repositories_wave7_trackcheck.py` | Interprocedural shell-wrapper and HexStrike-shaped A/B suite |
@@ -222,6 +232,8 @@ python3 harness/skills_wave4_trackcheck.py --agent build/phylax_skills_agent.py
 python3 harness/packages_wave4_trackcheck.py --agent build/phylax_packages_agent.py
 python3 harness/packages_wave5_trackcheck.py --agent build/phylax_packages_agent.py
 python3 harness/packages_wave6_trackcheck.py --agent build/phylax_packages_agent.py
+python3 harness/packages_wave7_precision_trackcheck.py --agent build/phylax_packages_agent.py
+python3 harness/packages_wave8_supply_chain_trackcheck.py --agent build/phylax_packages_agent.py
 python3 harness/packages_llm_trackcheck.py
 python3 harness/repositories_trackcheck.py
 python3 harness/repositories_wave3_trackcheck.py
@@ -367,6 +379,9 @@ The complete source-by-source rationale and validator A/B history are in
 | Packages wave-4 trackcheck | 1.0000 — previous candidate 0.4130 |
 | Packages wave-5 polyglot lifecycle | 1.0000 — standalone baseline 0.3146 |
 | Packages wave-6 resolved CVEs | 1.0000 — TP 6, TN 8, FP 0, FN 0, quality 1.0 |
+| Packages wave-7 scope precision | 1.0000 — TP 3, TN 4, FP 0, FN 0, quality 1.0 |
+| Packages wave-8 modern supply chain | 1.0000 — TP 7, TN 7, FP 0, FN 0, quality 1.0 |
+| Real package precision smoke | requests, urllib3, setuptools, pip and httpx all ALLOW |
 | Packages strict LLM grounding | 2/4 grounded findings accepted; hallucinated dependency and invalid line rejected |
 | Expanded MCP suite | 1.0000 — TP 17, TN 18, FP 0, FN 0 |
 | Public packages corpus | 1.0000 |
@@ -405,6 +420,7 @@ For the full chronology:
 - [independent sn76_3 lexical surface graph](notes/2026-07-31-repositories-independent-wave8.md)
 - [four version 5 submission receipts](notes/2026-07-31-version5-submission-receipts.md)
 - [validator-owned inference key compatibility](notes/2026-07-31-llm-validator-key-compat.md)
+- [packages v7 precision, supply-chain coverage and receipt](notes/2026-07-31-packages-v7.md)
 - [repositories wave-2 improvements](notes/2026-07-29-repositories-wave2.md)
 - [repositories wave-3 CI/workflow improvements](notes/2026-07-29-repositories-wave3.md)
 - [repositories wave-6 and sn76_4 v2 receipt](notes/2026-07-30-repositories-wave6.md)

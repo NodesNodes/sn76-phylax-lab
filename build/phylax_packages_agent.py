@@ -49,11 +49,16 @@ _LLM_TERMS = (
     "private key", "os.environ", "process.env", "subprocess", "child_process",
     "eval(", "exec(", "curl ", "wget ", "base64", "postinstall", "preinstall",
     "pull_request_target", "workflow_dispatch", "chmod", "/dev/tcp", "webhook",
+    "cve-", "security advisory", "vulnerable dependency",
 )
 _LLM_MANIFESTS = frozenset({
     "package.json", "package-lock.json", "pyproject.toml", "setup.py",
     "requirements.txt", "cargo.toml", "go.mod", "composer.json", "pom.xml",
-    "gemfile", "dockerfile",
+    "gemfile", "dockerfile", "npm-shrinkwrap.json", "yarn.lock",
+    "pnpm-lock.yaml", "pnpm-lock.yml", "pipfile.lock", "poetry.lock",
+    "uv.lock", "pdm.lock", "cargo.lock", "composer.lock", "gemfile.lock",
+    "gradle.lockfile", "packages.lock.json", "package.resolved", "go.sum",
+    "mix.lock",
 })
 _LLM_REPOSITORY_SUPPLY_TYPES = {
     "typosquat": "typosquat",
@@ -198,10 +203,25 @@ def _llm_dossier(report, files, track):
                      "capability_manifest"),
         "repositories": ("audit", "vulnerabilities", "supply_chain", "secrets"),
     }.get(track, ("action_plane", "context_plane", "capability_manifest"))
+    static_evidence = {
+        key: _llm_bound(evidence.get(key)) for key in keys if key in evidence
+    }
+    if track == "packages" and isinstance(evidence.get("supply_chain"), dict):
+        supply = evidence["supply_chain"]
+        bounded_supply = _llm_bound(supply)
+        dependencies = supply.get("dependencies")
+        if isinstance(bounded_supply, dict) and isinstance(dependencies, list):
+
+
+
+            bounded_supply["dependencies"] = [
+                _llm_bound(item, 2) for item in dependencies[:64]
+            ]
+        static_evidence["supply_chain"] = bounded_supply
     static = {
         "verdict": _llm_bound(report.get("verdict") or {}),
         "findings": _llm_bound(report.get("findings") or []),
-        "evidence": {key: _llm_bound(evidence.get(key)) for key in keys if key in evidence},
+        "evidence": static_evidence,
     }
     budget = {"skills": 14_000, "packages": 22_000, "repositories": 36_000}[track]
     ranked = []
@@ -484,8 +504,23 @@ def _llm_package_candidates(grounded, result, file_index, evidence):
         package = str(raw.get("package") or "").strip().lower()
         related = str(raw.get("related") or "").strip()
         if canonical == "dependency_cve":
+            dependency = next(
+                (
+                    item for item in (supply.get("dependencies") or [])
+                    if isinstance(item, dict)
+                    and str(item.get("name") or "").strip().lower() == package
+                ),
+                None,
+            )
+            version = str((dependency or {}).get("version") or "")
+            concrete = bool((dependency or {}).get("resolved")) or bool(re.fullmatch(
+                r"\s*(?:==|=|v)?\s*\d+(?:\.\d+){0,3}"
+                r"(?:[-+][A-Za-z0-9.-]+)?\s*",
+                version,
+            ))
             if (
                 package not in dependency_names
+                or not concrete
                 or not re.fullmatch(r"(?i)CVE-\d{4}-\d{4,7}", related)
             ):
                 continue
@@ -839,9 +874,9 @@ _MANIFEST_NAMES = frozenset({
     "package.json", "pyproject.toml", "setup.cfg", "pipfile", "manifest.json",
     "requirements.txt", "cargo.toml", "go.mod", "gemfile", "composer.json", "mcp.json",
     "package-lock.json", "npm-shrinkwrap.json", "pipfile.lock", "poetry.lock",
-    "uv.lock", "gemfile.lock", "composer.lock", "pom.xml", "yarn.lock",
+    "uv.lock", "pdm.lock", "gemfile.lock", "composer.lock", "pom.xml", "yarn.lock",
     "pnpm-lock.yaml", "packages.lock.json", "gradle.lockfile", "mix.lock",
-    "package.resolved",
+    "package.resolved", "go.sum",
 })
 
 _ENTRYPOINT_STEMS = frozenset({
@@ -958,15 +993,59 @@ class _File:
         except (SyntaxError, ValueError):
             return self.text
         out: list[str] = []
-        for node in tree.body:
+
+        def source(node) -> str:
+            return ast.get_source_segment(self.text, node) or ""
+
+        def visit(node) -> None:
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
                                  ast.Import, ast.ImportFrom)):
-                continue
+                return
+            if (
+                isinstance(node, ast.Expr)
+                and isinstance(node.value, ast.Constant)
+                and isinstance(node.value.value, str)
+            ):
+                return
             if isinstance(node, ast.If) and _is_main_guard(node.test):
-                continue
-            start = getattr(node, "lineno", 1) - 1
-            end = getattr(node, "end_lineno", start + 1)
-            out.extend(self.lines[start:end])
+                return
+            if isinstance(node, ast.If):
+                out.append(source(node.test))
+                for child in node.body + node.orelse:
+                    visit(child)
+                return
+            if isinstance(node, (ast.For, ast.AsyncFor)):
+                out.append(source(node.iter))
+                for child in node.body + node.orelse:
+                    visit(child)
+                return
+            if isinstance(node, ast.While):
+                out.append(source(node.test))
+                for child in node.body + node.orelse:
+                    visit(child)
+                return
+            if isinstance(node, (ast.With, ast.AsyncWith)):
+                out.extend(source(item.context_expr) for item in node.items)
+                for child in node.body:
+                    visit(child)
+                return
+            if isinstance(node, ast.Try):
+                for child in node.body + node.orelse + node.finalbody:
+                    visit(child)
+                for handler in node.handlers:
+                    for child in handler.body:
+                        visit(child)
+                return
+            if hasattr(ast, "Match") and isinstance(node, ast.Match):
+                out.append(source(node.subject))
+                for case in node.cases:
+                    for child in case.body:
+                        visit(child)
+                return
+            out.append(source(node))
+
+        for node in tree.body:
+            visit(node)
         return "\n".join(out)
 
 def _read_files(artifact_dir: str) -> list[_File]:
@@ -2027,6 +2106,16 @@ def _entry_values(value) -> list[str]:
         return [item for part in value.values() for item in _entry_values(part)]
     return []
 
+
+_AUXILIARY_PACKAGE_DIRS = frozenset({
+    "test", "tests", "testing", "fixture", "fixtures", "example", "examples",
+    "docs", "doc", "benchmark", "benchmarks",
+})
+
+
+def _auxiliary_package_path(rel: str) -> bool:
+    return any(part.lower() in _AUXILIARY_PACKAGE_DIRS for part in rel.split("/")[:-1])
+
 def _resolve_local_entry(ref: str, by_rel: dict[str, _File]) -> _File | None:
     target = ref.replace("\\", "/").strip().lstrip("./")
     if not target or target.startswith(("http:", "https:", "node:")):
@@ -2044,9 +2133,46 @@ def _resolve_local_entry(ref: str, by_rel: dict[str, _File]) -> _File | None:
 def _package_import_entries(files: list[_File], package_name: str) -> list[_File]:
 
     by_rel = {f.rel: f for f in files}
-    entries: list[_File] = [
-        f for f in files if f.base == "__init__.py"
-    ]
+    entries: list[_File] = []
+    has_javascript_manifest = any(f.base == "package.json" for f in files)
+    has_python_manifest = any(
+        f.base in ("pyproject.toml", "setup.py", "setup.cfg") for f in files
+    )
+
+
+
+
+
+    module = package_name.rsplit("/", 1)[-1].replace("-", "_").replace(".", "_")
+    preferred = []
+    if module:
+        preferred = [
+            rel for rel in (
+                f"{module}/__init__.py", f"src/{module}/__init__.py",
+                f"lib/{module}/__init__.py", f"{module}.py", f"src/{module}.py",
+            ) if rel in by_rel
+        ]
+    if has_python_manifest or not has_javascript_manifest:
+        if preferred:
+            entries.extend(by_rel[rel] for rel in preferred)
+        else:
+            init_paths = {f.rel for f in files if f.base == "__init__.py"}
+            if "__init__.py" in init_paths:
+                entries.append(by_rel["__init__.py"])
+                init_paths = set()
+            for rel in sorted(init_paths):
+                parts = rel.split("/")
+                root = parts[1] if parts[0] in ("src", "lib") and len(parts) > 1 else parts[0]
+                if root.lower() in _AUXILIARY_PACKAGE_DIRS:
+                    continue
+                directory = rel.rsplit("/", 1)[0] if "/" in rel else ""
+                parent = directory.rsplit("/", 1)[0] if "/" in directory else ""
+                ancestors = []
+                while parent:
+                    ancestors.append(parent + "/__init__.py")
+                    parent = parent.rsplit("/", 1)[0] if "/" in parent else ""
+                if not any(candidate in init_paths for candidate in ancestors):
+                    entries.append(by_rel[rel])
     refs: list[str] = []
     for f in files:
         if f.base != "package.json":
@@ -2080,13 +2206,6 @@ def _package_import_entries(files: list[_File], package_name: str) -> list[_File
             if name in by_rel:
                 entries.append(by_rel[name])
 
-
-
-    module = package_name.rsplit("/", 1)[-1].replace("-", "_").replace(".", "_")
-    if module:
-        for rel in (f"{module}.py", f"src/{module}.py"):
-            if rel in by_rel:
-                entries.append(by_rel[rel])
     return list({f.rel: f for f in entries}.values())
 
 def _all_npm_scripts(files: list[_File]) -> dict[str, str]:
@@ -2164,8 +2283,12 @@ def _dependency_registry_pinned(name: str, scopes: set[str], private_default: bo
     return False
 
 _EXTRA_SECRET_PATH = (
-    r"(?:\.gnupg(?:[/\\]|$)|logins\.json|key4\.db|cookies\.sqlite|"
-    r"/etc/shadow|\.password-store(?:[/\\]|$)|"
+    r"(?:\.ssh[/\\](?:id_rsa|id_ed25519)|\.aws[/\\]credentials|"
+    r"\.gnupg(?:[/\\]|$)|\.netrc|\.npmrc|\.pypirc|"
+    r"\.docker[/\\]config\.json|\.config[/\\]gh[/\\]hosts\.yml|"
+    r"\.ethereum[/\\]keystore|\.electrum(?:[/\\]|$)|wallet\.dat|"
+    r"logins\.json|key4\.db|cookies\.sqlite|/etc/shadow|"
+    r"\.password-store(?:[/\\]|$)|"
     r"(?:service[_-]?account|credentials)\.json|(?:^|[/\\])kubeconfig\b)"
 )
 
@@ -2179,10 +2302,16 @@ def _package_file_capabilities(f: _File, text: str | None = None) -> set[str]:
 
     body = f.text if text is None else text
     caps = _scan_file_capabilities(f, body)
+    if f.kind == "code":
 
 
-    if f.kind == "code" and _EXTRA_SECRET_READ.search(body):
-        caps.add("READ_SECRETS")
+
+
+        caps -= {
+            "READ_SECRETS", "READ_PRIVATE_KEY", "ACCESS_WALLET", "READ_KEYCHAIN",
+        }
+        if _EXTRA_SECRET_READ.search(body):
+            caps.add("READ_SECRETS")
     return caps
 
 _FACT_VALUE_BYTES = 65_536
@@ -2402,6 +2531,16 @@ def _fact_python_scopes(tree, phase: str) -> list[tuple[str, list]]:
                 and child.func.id not in reachable
             ):
                 queue.append(child.func.id)
+    if phase == "runtime":
+
+
+
+
+        scopes = [("(module)", active)]
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                scopes.append((node.name, node.body))
+        return scopes
     return [("(module)", active)] + [
         (name, definitions[name].body) for name in sorted(reachable)
     ]
@@ -2717,6 +2856,159 @@ def _fact_chain_summary(chain: _Chain) -> str:
         for fact in chain.stages
     )
 
+
+_JS_VALUE_ASSIGNMENT = re.compile(
+    r"(?s)\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(.{1,1200}?);"
+)
+_JS_EGRESS_CALL = re.compile(
+    r"(?i)(?:axios\.(?:post|put|patch|request)|fetch|"
+    r"https?\.request|\.post)\s*\("
+)
+_JS_REQUIRE_ALIAS = re.compile(
+    r"\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"
+    r"require\s*\(\s*[\"'](\.{1,2}/[^\"']+)[\"']\s*\)"
+)
+_JS_FUNCTION_BLOCK = re.compile(
+    r"(?:\bfunction\s*[A-Za-z_$]*\s*\([^)]*\)|"
+    r"(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|"
+    r"\b[A-Za-z_$][\w$]*\s*\([^)]*\))\s*\{"
+)
+
+
+def _js_sensitive_expression(text: str) -> bool:
+    return bool(_ENV_BULK.search(text) or _EXTRA_SECRET_READ.search(text))
+
+
+def _js_function_ranges(text: str) -> list[tuple[int, int]]:
+
+    ranges = []
+    for match in _JS_FUNCTION_BLOCK.finditer(text):
+        opening = text.find("{", match.start(), match.end())
+        if opening < 0:
+            continue
+        depth, quote, escaped = 0, "", False
+        for index in range(opening, len(text)):
+            char = text[index]
+            if quote:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = ""
+                continue
+            if char in ("'", '"', "`"):
+                quote = char
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    ranges.append((opening, index))
+                    break
+    return ranges
+
+
+def _js_scope_at(ranges: list[tuple[int, int]], position: int) -> tuple[int, int] | None:
+    matches = [bounds for bounds in ranges if bounds[0] < position < bounds[1]]
+    return min(matches, key=lambda bounds: bounds[1] - bounds[0]) if matches else None
+
+
+def _js_credential_chain(f: _File) -> _Chain | None:
+
+    if f.suffix not in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
+        return None
+    ranges = _js_function_ranges(f.text)
+    sources: dict[str, tuple[int, int, tuple[int, int] | None]] = {}
+    for match in _JS_VALUE_ASSIGNMENT.finditer(f.text):
+        if _js_sensitive_expression(match.group(2)):
+            sources[match.group(1)] = (
+                f.text.count("\n", 0, match.start()) + 1,
+                match.start(), _js_scope_at(ranges, match.start()),
+            )
+    for match in _JS_EGRESS_CALL.finditer(f.text):
+        window = f.text[match.start():match.start() + 1600]
+        line = f.text.count("\n", 0, match.start()) + 1
+        sink_scope = _js_scope_at(ranges, match.start())
+        direct = _ENV_BULK.search(window) or _EXTRA_SECRET_READ.search(window)
+        if direct is not None:
+            absolute = match.start() + direct.start()
+            if _js_scope_at(ranges, absolute) == sink_scope:
+                return _Chain("credential_exfiltration", [
+                    _Fact("sensitive_source", "javascript_secret_read", f.rel,
+                          f.text.count("\n", 0, absolute) + 1,
+                          "(expression)", "runtime", 0.95),
+                    _Fact("external_sink", "javascript_network_call", f.rel,
+                          line, "(expression)", "runtime", 0.95),
+                ], 0.95)
+        for symbol, (source_line, _position, source_scope) in sources.items():
+            if source_scope == sink_scope and re.search(
+                rf"\b{re.escape(symbol)}\b", window
+            ):
+                return _Chain("credential_exfiltration", [
+                    _Fact("sensitive_source", "javascript_secret_read", f.rel,
+                          source_line, "(scope)", "runtime", 0.95, symbol),
+                    _Fact("external_sink", "javascript_network_call", f.rel,
+                          line, "(scope)", "runtime", 0.95),
+                ], 0.95)
+    return None
+
+
+def _relative_module(current: _File, spec: str, by_rel: dict[str, _File]) -> _File | None:
+    base = current.rel.rsplit("/", 1)[0] if "/" in current.rel else ""
+    target = spec
+    while target.startswith("../"):
+        target = target[3:]
+        base = base.rsplit("/", 1)[0] if "/" in base else ""
+    target = target[2:] if target.startswith("./") else target
+    ref = f"{base}/{target}" if base else target
+    return _resolve_local_entry(ref, by_rel)
+
+
+def _js_cross_file_credential_chain(
+    files: list[_File], entries: list[_File]
+) -> _Chain | None:
+
+    by_rel = {f.rel: f for f in files}
+    reachable = _import_closure(entries, files)
+    readers = {
+        f.rel for f in reachable
+        if f.kind == "code" and _js_sensitive_expression(f.text)
+    }
+    senders = {
+        f.rel for f in reachable
+        if f.kind == "code" and _package_file_capabilities(f) & _EGRESS
+    }
+    if not readers or not senders:
+        return None
+    for coordinator in reachable:
+        aliases = {}
+        for match in _JS_REQUIRE_ALIAS.finditer(coordinator.text):
+            target = _relative_module(coordinator, match.group(2), by_rel)
+            if target is not None:
+                aliases[match.group(1)] = target.rel
+        reader_aliases = [alias for alias, rel in aliases.items() if rel in readers]
+        sender_aliases = [alias for alias, rel in aliases.items() if rel in senders]
+        for reader in reader_aliases:
+            for sender in sender_aliases:
+                nested = re.search(
+                    rf"\b{re.escape(sender)}(?:\.[A-Za-z_$][\w$]*)?\s*\("
+                    rf"[^;]{{0,700}}\b{re.escape(reader)}"
+                    rf"(?:\.[A-Za-z_$][\w$]*)?\s*\(",
+                    coordinator.text,
+                )
+                if nested is None:
+                    continue
+                reader_file = aliases[reader]
+                line = coordinator.text.count("\n", 0, nested.start()) + 1
+                return _Chain("credential_exfiltration", [
+                    _Fact("sensitive_source", "cross_file_bulk_environment",
+                          reader_file, 1, "(export)", "runtime", 0.93),
+                    _Fact("external_sink", "coordinated_network_call",
+                          coordinator.rel, line, "(module)", "runtime", 0.93),
+                ], 0.93)
+    return None
+
 _MANIFEST_LIFECYCLE_ASSIGN = re.compile(
     r"""(?i)(?:scripts\s*(?:\.|\[\s*["'])|["']scripts["']\s*:\s*\{[\s\S]{0,180})"""
     r"""(preinstall|install|postinstall|prepare|prepublish)"""
@@ -2982,6 +3274,9 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
         body = f.module_level
         caps = _package_file_capabilities(f, body)
         chains = _package_python_fact_chains(f, "import")
+        js_chain = _js_credential_chain(_File(f.rel, body))
+        if js_chain is not None:
+            chains.append(js_chain)
         import_fact_chains.extend(chains)
         for chain in chains:
             if chain.name == "credential_exfiltration":
@@ -3076,6 +3371,9 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
         ))
 
     by_rel = {f.rel: f for f in files}
+    reachable_runtime = {
+        f.rel for f in _import_closure(init_files + hook_payloads, files)
+    }
     for rel in sorted(per_file):
         caps = per_file[rel]
 
@@ -3084,7 +3382,13 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
         text = by_rel[rel].text
         wallet = (
             by_rel[rel].kind == "code"
-            and (_wallet_material_access(text) or _wallet_drainer(text))
+            and (
+                _wallet_drainer(text)
+                or (
+                    _wallet_material_access(text)
+                    and _EXTRA_SECRET_READ.search(text) is not None
+                )
+            )
         )
         if wallet:
             risk = max(risk, 0.90)
@@ -3102,30 +3406,49 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
 
 
 
-        if _chain(caps) and by_rel[rel].kind == "code" and not wallet:
+        runtime_chains = _package_python_fact_chains(by_rel[rel], "runtime")
+        js_runtime = _js_credential_chain(by_rel[rel])
+        if js_runtime is not None:
+            runtime_chains.append(js_runtime)
+        exfil = next(
+            (
+                chain for chain in runtime_chains
+                if chain.name == "credential_exfiltration"
+                and any(
+                    stage.kind == "sensitive_source"
+                    and stage.subtype not in ("named_secret_environment",)
+                    for stage in chain.stages
+                )
+            ),
+            None,
+        )
+        if (
+            exfil is not None
+            and not wallet
+            and (rel in reachable_runtime or not _auxiliary_package_path(rel))
+        ):
             risk = max(risk, 0.88)
+            sink = exfil.stages[-1]
             signals.append(_Signal(
-                "READ_ENV_SECRETS", "credential_theft", "action", rel, 1,
-                "Reads credentials or environment and sends them to an external host",
+                "READ_ENV_SECRETS", "credential_theft", "action",
+                sink.file, sink.line,
+                "Reads credentials or environment and sends them to an external host: "
+                + _fact_chain_summary(exfil),
                 "CRIT", 0.88,
             ))
 
 
 
 
-
-
-
-
-    code_caps = {rel: caps for rel, caps in per_file.items() if by_rel[rel].kind == "code"}
-    readers = sorted(r for r, c in code_caps.items() if c & _SECRET_READ)
-    senders = sorted(r for r, c in code_caps.items() if c & _EGRESS)
-    if readers and senders and not any(_chain(code_caps[r]) for r in readers):
+    cross_file_exfil = _js_cross_file_credential_chain(files, init_files)
+    if cross_file_exfil is not None:
         risk = max(risk, 0.85)
+        source = cross_file_exfil.stages[0]
         signals.append(_Signal(
-            "READ_ENV_SECRETS", "credential_theft", "action", readers[0], 1,
-            "Credentials read in one module and sent to an external host by "
-            "another: " + ", ".join(readers + senders),
+            "READ_ENV_SECRETS", "credential_theft", "action",
+            source.file, source.line,
+            "Credentials read in one module and sent to an external host by another: "
+            + _fact_chain_summary(cross_file_exfil),
             "CRIT", 0.85,
         ))
 
@@ -3214,18 +3537,29 @@ _POLYGLOT_INSTALL_KEYS = frozenset({
     "pre-install-cmd", "post-install-cmd", "pre-update-cmd", "post-update-cmd",
 })
 _POLYGLOT_CVE = {
-    ("npm", "lodash"): ("4.17.21", "CVE-2021-23337"),
-    ("npm", "minimist"): ("1.2.6", "CVE-2021-44906"),
-    ("npm", "axios"): ("0.21.2", "CVE-2021-3749"),
-    ("npm", "node-fetch"): ("2.6.7", "CVE-2022-0235"),
-    ("npm", "tough-cookie"): ("4.1.3", "CVE-2023-26136"),
-    ("npm", "jsonwebtoken"): ("9.0.0", "CVE-2022-23529"),
-    ("npm", "moment"): ("2.29.4", "CVE-2022-31129"),
-    ("pypi", "pyyaml"): ("5.4", "CVE-2020-14343"),
-    ("pypi", "jinja2"): ("3.1.4", "CVE-2024-34064"),
-    ("crates", "time"): ("0.2.23", "CVE-2020-26235"),
-    ("rubygems", "rack"): ("2.2.6", "CVE-2022-44570"),
-    ("composer", "symfony/http-foundation"): ("5.4.31", "CVE-2023-46733"),
+    ("npm", "lodash"): (("0", "4.17.21", "CVE-2021-23337"),),
+    ("npm", "minimist"): (
+        ("0", "0.2.4", "CVE-2021-44906"),
+        ("1.0.0", "1.2.6", "CVE-2021-44906"),
+    ),
+    ("npm", "axios"): (("0", "0.21.2", "CVE-2021-3749"),),
+    ("npm", "node-fetch"): (("2.0.0", "2.6.7", "CVE-2022-0235"),),
+    ("npm", "tough-cookie"): (("4.0.0", "4.1.3", "CVE-2023-26136"),),
+    ("npm", "jsonwebtoken"): (("0", "9.0.0", "CVE-2022-23529"),),
+    ("npm", "moment"): (("0", "2.29.4", "CVE-2022-31129"),),
+    ("pypi", "pyyaml"): (("5.1", "5.4", "CVE-2020-14343"),),
+    ("pypi", "jinja2"): (("3.1.0", "3.1.4", "CVE-2024-34064"),),
+    ("crates", "time"): (("0.2.0", "0.2.23", "CVE-2020-26235"),),
+    ("rubygems", "rack"): (("2.2.0", "2.2.6", "CVE-2022-44570"),),
+    ("composer", "symfony/http-foundation"): (
+        ("5.4.0", "5.4.31", "CVE-2023-46733"),
+    ),
+    ("maven", "org.apache.logging.log4j:log4j-core"): (
+        ("2.0.0", "2.15.0", "CVE-2021-44228"),
+    ),
+    ("maven", "org.apache.commons:commons-text"): (
+        ("1.5.0", "1.10.0", "CVE-2022-42889"),
+    ),
 }
 
 
@@ -3240,6 +3574,63 @@ def _package_version_before(value: str, fixed: str) -> bool:
         return False
     width = max(len(current), len(boundary))
     return current + (0,) * (width - len(current)) < boundary + (0,) * (width - len(boundary))
+
+
+def _package_version_at_least(value: str, introduced: str) -> bool:
+    current, boundary = _package_version(value), _package_version(introduced)
+    if not current or not boundary:
+        return False
+    width = max(len(current), len(boundary))
+    return current + (0,) * (width - len(current)) >= boundary + (0,) * (width - len(boundary))
+
+
+def _npm_lock_name(path: str) -> str:
+
+    value = str(path).replace("\\", "/").rstrip("/")
+    if "node_modules/" in value:
+        value = value.rsplit("node_modules/", 1)[1]
+    return value
+
+
+def _npm_selector_name(selector: str) -> str:
+    value = selector.strip().strip("\"'").lstrip("/")
+    if "@npm:" in value:
+        return value.split("@npm:", 1)[0]
+    if value.startswith("@") and "/" in value:
+        boundary = value.find("@", value.find("/") + 1)
+        return value if boundary < 0 else value[:boundary]
+    return value.split("@", 1)[0]
+
+
+def _yarn_resolutions(text: str) -> list[tuple[str, str]]:
+
+    out = []
+    starts = list(re.finditer(r"(?m)^(?!\s|#)(.+):\s*$", text))
+    for index, start in enumerate(starts):
+        end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
+        block = text[start.end():end]
+        version = re.search(
+            r"(?m)^\s{2,}version(?:\s+|:\s*)[\"']?"
+            r"([0-9][A-Za-z0-9.+-]*)",
+            block,
+        )
+        if version is None:
+            continue
+        for selector in re.split(r",\s*", start.group(1)):
+            name = _npm_selector_name(selector)
+            if name:
+                out.append((name, version.group(1)))
+    return out
+
+
+def _xml_value(block: str, tag: str) -> str:
+    match = re.search(
+        rf"<(?:[A-Za-z0-9_.-]+:)?{re.escape(tag)}>\s*([^<]+?)\s*"
+        rf"</(?:[A-Za-z0-9_.-]+:)?{re.escape(tag)}>",
+        block,
+        re.I,
+    )
+    return match.group(1).strip() if match else ""
 
 
 def _polyglot_dependencies(files: list[_File]) -> list[dict]:
@@ -3260,7 +3651,7 @@ def _polyglot_dependencies(files: list[_File]) -> list[dict]:
             "cve": [],
             "source": source,
         }
-        rule = _POLYGLOT_CVE.get(key)
+        rules = _POLYGLOT_CVE.get(key) or ()
 
 
 
@@ -3268,10 +3659,12 @@ def _polyglot_dependencies(files: list[_File]) -> list[dict]:
             r"\s*(?:==|=|v)?\s*\d+(?:\.\d+){0,3}(?:[-+][A-Za-z0-9.-]+)?\s*",
             item["version"],
         ))
-        if rule and (resolved or exact) and _package_version_before(
-            item["version"], rule[0]
-        ):
-            item["cve"] = [rule[1]]
+        if resolved or exact:
+            item["cve"] = sorted({
+                cve for introduced, fixed, cve in rules
+                if _package_version_at_least(item["version"], introduced)
+                and _package_version_before(item["version"], fixed)
+            })
         previous = dependencies.get(key)
         if previous is None or (resolved and not previous.get("resolved")):
             item["resolved"] = resolved
@@ -3304,7 +3697,7 @@ def _polyglot_dependencies(files: list[_File]) -> list[dict]:
                         and isinstance(value, dict)
                     ):
                         add(
-                            "npm", str(path).split("node_modules/", 1)[1],
+                            "npm", _npm_lock_name(str(path)),
                             str(value.get("version", "")), f.rel, resolved=True,
                         )
             dependencies_block = (
@@ -3362,7 +3755,7 @@ def _polyglot_dependencies(files: list[_File]) -> list[dict]:
                             "pypi", str(name), str(version), f.rel,
                             resolved=True,
                         )
-        elif f.base == "poetry.lock":
+        elif f.base in ("poetry.lock", "uv.lock", "pdm.lock"):
             for block in re.split(r"(?m)^\s*\[\[package\]\]\s*$", f.text)[1:]:
                 name = re.search(
                     r"""(?m)^\s*name\s*=\s*["']([^"']+)["']""", block
@@ -3447,20 +3840,109 @@ def _polyglot_dependencies(files: list[_File]) -> list[dict]:
             ):
                 add("rubygems", name, version, f.rel)
         elif f.base == "yarn.lock":
-            for name, version in re.findall(
-                r"""(?m)^(?:["'])?((?:@[^/\s@]+/)?[^@\s"']+)"""
-                r"""@[^:\n]+:(?:["'])?\s*\n"""
-                r"""(?:\s{2}[^\n]*\n){0,5}?\s{2}version\s+["']([^"']+)["']""",
-                f.text,
-            ):
+            for name, version in _yarn_resolutions(f.text):
                 add("npm", name, version, f.rel, resolved=True)
         elif f.base in ("pnpm-lock.yaml", "pnpm-lock.yml"):
             for name, version in re.findall(
-                r"(?m)^\s{2,}((?:@[^/:\s]+/)?[^@:\s]+)"
-                r"@([0-9][A-Za-z0-9.+-]*):\s*$",
+                r"(?m)^\s{2,}[\"']?/?((?:@[^/:\s]+/)?[^@:\s\"']+)"
+                r"@([0-9][A-Za-z0-9.+-]*)(?:\([^\n]*\))?[\"']?:\s*$",
                 f.text,
             ):
                 add("npm", name, version, f.rel, resolved=True)
+        elif f.base == "pom.xml":
+            properties = {
+                key.lower(): value.strip()
+                for key, value in re.findall(
+                    r"<([A-Za-z0-9_.-]+)>\s*([^<]+?)\s*</\1>", f.text
+                )
+            }
+            for block in re.findall(
+                r"<(?:[A-Za-z0-9_.-]+:)?dependency>"
+                r"([\s\S]*?)</(?:[A-Za-z0-9_.-]+:)?dependency>",
+                f.text,
+                re.I,
+            ):
+                group = _xml_value(block, "groupId")
+                artifact = _xml_value(block, "artifactId")
+                version = _xml_value(block, "version")
+                prop = re.fullmatch(r"\$\{([^}]+)\}", version)
+                if prop:
+                    version = properties.get(prop.group(1).lower(), version)
+                if artifact:
+                    add(
+                        "maven", f"{group}:{artifact}" if group else artifact,
+                        version, f.rel,
+                    )
+        elif f.base == "gradle.lockfile":
+            for group, artifact, version in re.findall(
+                r"(?m)^([A-Za-z0-9_.-]+):([A-Za-z0-9_.-]+):"
+                r"([0-9][A-Za-z0-9.+-]*)=",
+                f.text,
+            ):
+                add(
+                    "maven", f"{group}:{artifact}", version, f.rel,
+                    resolved=True,
+                )
+        elif f.base == "packages.lock.json":
+            try:
+                data = json.loads(f.text)
+            except (ValueError, TypeError):
+                data = {}
+            frameworks = data.get("dependencies") if isinstance(data, dict) else None
+            if isinstance(frameworks, dict):
+                for packages in frameworks.values():
+                    if not isinstance(packages, dict):
+                        continue
+                    for name, value in packages.items():
+                        version = value.get("resolved", "") if isinstance(value, dict) else value
+                        add("nuget", str(name), str(version), f.rel, resolved=True)
+        elif f.base == "package.resolved":
+            try:
+                data = json.loads(f.text)
+            except (ValueError, TypeError):
+                data = {}
+            pins = data.get("pins") if isinstance(data, dict) else None
+            if isinstance(pins, list):
+                for pin in pins:
+                    if not isinstance(pin, dict):
+                        continue
+                    state = pin.get("state") if isinstance(pin.get("state"), dict) else {}
+                    add(
+                        "swift", str(pin.get("identity") or pin.get("package") or ""),
+                        str(state.get("version") or state.get("revision") or ""),
+                        f.rel, resolved=True,
+                    )
+        elif f.base == "go.mod":
+            in_require = False
+            for raw in f.lines:
+                line = raw.split("//", 1)[0].strip()
+                if line == "require (":
+                    in_require = True
+                    continue
+                if in_require and line == ")":
+                    in_require = False
+                    continue
+                match = re.match(
+                    r"(?:require\s+)?([A-Za-z0-9_.~/-]+)\s+"
+                    r"v?([0-9][A-Za-z0-9.+-]*)",
+                    line,
+                )
+                if match and (in_require or raw.lstrip().startswith("require ")):
+                    add("go", match.group(1), match.group(2), f.rel)
+        elif f.base == "go.sum":
+            for name, version in re.findall(
+                r"(?m)^([A-Za-z0-9_.~/-]+)\s+v([0-9][A-Za-z0-9.+-]*)"
+                r"(?:/go\.mod)?\s+h1:",
+                f.text,
+            ):
+                add("go", name, version, f.rel, resolved=True)
+        elif f.base == "mix.lock":
+            for name, version in re.findall(
+                r"\{\s*:hex\s*,\s*:([A-Za-z0-9_]+)\s*,\s*[\"']"
+                r"([0-9][A-Za-z0-9.+-]*)",
+                f.text,
+            ):
+                add("hex", name, version, f.rel, resolved=True)
     return list(dependencies.values())
 
 

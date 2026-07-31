@@ -25,11 +25,16 @@ _LLM_TERMS = (
     "private key", "os.environ", "process.env", "subprocess", "child_process",
     "eval(", "exec(", "curl ", "wget ", "base64", "postinstall", "preinstall",
     "pull_request_target", "workflow_dispatch", "chmod", "/dev/tcp", "webhook",
+    "cve-", "security advisory", "vulnerable dependency",
 )
 _LLM_MANIFESTS = frozenset({
     "package.json", "package-lock.json", "pyproject.toml", "setup.py",
     "requirements.txt", "cargo.toml", "go.mod", "composer.json", "pom.xml",
-    "gemfile", "dockerfile",
+    "gemfile", "dockerfile", "npm-shrinkwrap.json", "yarn.lock",
+    "pnpm-lock.yaml", "pnpm-lock.yml", "pipfile.lock", "poetry.lock",
+    "uv.lock", "pdm.lock", "cargo.lock", "composer.lock", "gemfile.lock",
+    "gradle.lockfile", "packages.lock.json", "package.resolved", "go.sum",
+    "mix.lock",
 })
 _LLM_REPOSITORY_SUPPLY_TYPES = {
     "typosquat": "typosquat",
@@ -174,10 +179,25 @@ def _llm_dossier(report, files, track):
                      "capability_manifest"),
         "repositories": ("audit", "vulnerabilities", "supply_chain", "secrets"),
     }.get(track, ("action_plane", "context_plane", "capability_manifest"))
+    static_evidence = {
+        key: _llm_bound(evidence.get(key)) for key in keys if key in evidence
+    }
+    if track == "packages" and isinstance(evidence.get("supply_chain"), dict):
+        supply = evidence["supply_chain"]
+        bounded_supply = _llm_bound(supply)
+        dependencies = supply.get("dependencies")
+        if isinstance(bounded_supply, dict) and isinstance(dependencies, list):
+            # Dependency CVEs often live deep in a transitive lock graph. Keep
+            # enough normalized rows for model grounding instead of silently
+            # truncating the SBOM at the generic 16-item list bound.
+            bounded_supply["dependencies"] = [
+                _llm_bound(item, 2) for item in dependencies[:64]
+            ]
+        static_evidence["supply_chain"] = bounded_supply
     static = {
         "verdict": _llm_bound(report.get("verdict") or {}),
         "findings": _llm_bound(report.get("findings") or []),
-        "evidence": {key: _llm_bound(evidence.get(key)) for key in keys if key in evidence},
+        "evidence": static_evidence,
     }
     budget = {"skills": 14_000, "packages": 22_000, "repositories": 36_000}[track]
     ranked = []
@@ -460,8 +480,23 @@ def _llm_package_candidates(grounded, result, file_index, evidence):
         package = str(raw.get("package") or "").strip().lower()
         related = str(raw.get("related") or "").strip()
         if canonical == "dependency_cve":
+            dependency = next(
+                (
+                    item for item in (supply.get("dependencies") or [])
+                    if isinstance(item, dict)
+                    and str(item.get("name") or "").strip().lower() == package
+                ),
+                None,
+            )
+            version = str((dependency or {}).get("version") or "")
+            concrete = bool((dependency or {}).get("resolved")) or bool(re.fullmatch(
+                r"\s*(?:==|=|v)?\s*\d+(?:\.\d+){0,3}"
+                r"(?:[-+][A-Za-z0-9.-]+)?\s*",
+                version,
+            ))
             if (
                 package not in dependency_names
+                or not concrete
                 or not re.fullmatch(r"(?i)CVE-\d{4}-\d{4,7}", related)
             ):
                 continue

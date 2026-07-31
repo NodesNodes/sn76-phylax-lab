@@ -4,20 +4,21 @@
   "upstream_verified": "f455ac6",
   "working_code_sha256": "d57544e8d48831fabf134ca8c45b7cef57f42eb71a89b4aec87f10b49f0d3509",
   "active_code_sha256_by_track": {
-    "packages": "b10e00029099a18b8e3c7aed54c8034990b355bdf2970906d9c2b077fba3f875",
+    "packages": "ae41c7eb9a02a9ab90c8dd7e7646e829dfe2b15d8395082ef69eb41062a3487c",
     "mcp_servers": "ff3b309ae8623479e57d49232728f414b32e86a4282998c3f4b6bbf4e8483e9a",
     "skills": "c450118cfe45bc68c665cd6c9ebe290a552a7219c518f922b14b7d6e12b274aa",
     "repositories": "f666e70c524a4bb2ec6e0379a60e4b6a4977ba38608540b45fa724b9f5df2f5d"
   },
   "active_llm_code_sha256_by_profile": {
-    "sn76": "b10e00029099a18b8e3c7aed54c8034990b355bdf2970906d9c2b077fba3f875",
+    "sn76": "ae41c7eb9a02a9ab90c8dd7e7646e829dfe2b15d8395082ef69eb41062a3487c",
     "sn76_1": "ff3b309ae8623479e57d49232728f414b32e86a4282998c3f4b6bbf4e8483e9a",
     "sn76_2": "c450118cfe45bc68c665cd6c9ebe290a552a7219c518f922b14b7d6e12b274aa",
     "sn76_3": "b2e34da97cee38d0913c79a1f58faf520b4fb505b46e2eba9ac98def4b1ac2f3",
     "sn76_4": "f666e70c524a4bb2ec6e0379a60e4b6a4977ba38608540b45fa724b9f5df2f5d"
   },
   "active_llm_layer_sha256": {
-    "shared": "c41834fbb739ca8231ffd02632f98802ac85f66d9a44053fe42b46508c40caf2",
+    "packages": "54927141ed8249bcb3056e7e8e9119f63e1afbd8b019bb90816570179bf4fb34",
+    "other_profiles": "c41834fbb739ca8231ffd02632f98802ac85f66d9a44053fe42b46508c40caf2",
     "mcp": "5130f64bcca4a3f1dc35015599be2c64d47d5cacdf022c885a0f88b4d316f986"
   },
   "active_repository_code_sha256_by_hotkey": {
@@ -35,15 +36,14 @@
       "evaluation_state": "pending",
       "eligibility_state": "new",
       "qualifies_next_round": true,
-      "version": 6,
+      "version": 7,
       "agent_id": "5e2c55cf27df4d7581eefe39bff2dc1e",
-      "submitted_at": "2026-07-31T09:45:52.093537Z",
-      "submitted_code_sha256": "b10e00029099a18b8e3c7aed54c8034990b355bdf2970906d9c2b077fba3f875",
+      "submitted_at": "2026-07-31T17:23:09.590657Z",
+      "submitted_code_sha256": "ae41c7eb9a02a9ab90c8dd7e7646e829dfe2b15d8395082ef69eb41062a3487c",
       "source_path": "agent/phylax_packages_agent.py",
       "deploy_path": "build/phylax_packages_agent.py",
-      "source_sha256": "5c354aa6bafac5c5e78fa8c5b672860ccb6fc4e6d21abf83e64dc674f2e75d90",
-      "similarity_to_universal": 0.5612232866617539,
-      "previous_submitted_code_sha256": "53ffe922d09dce18b730a15a08d113e27b6f79f2e48d360f8df503e3e8038fc6",
+      "source_sha256": "22652d480d9275dde4a7eb1034a62a08465b3e7f106081d9099563bbb5eea496",
+      "previous_submitted_code_sha256": "b10e00029099a18b8e3c7aed54c8034990b355bdf2970906d9c2b077fba3f875",
       "inference_model": "openai/gpt-4.1-mini"
     },
     {
