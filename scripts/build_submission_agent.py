@@ -41,14 +41,27 @@ def main() -> int:
     source_path = Path(sys.argv[1])
     destination_path = Path(sys.argv[2])
     source = source_path.read_text(encoding="utf-8")
-    layer_start = "# BEGIN PHYLAX_LLM_LAYER_IMPORT"
-    layer_end = "# END PHYLAX_LLM_LAYER_IMPORT"
-    if layer_start in source:
-        layer_path = Path(__file__).resolve().parents[1] / "agent" / "phylax_llm_layer.py"
+    layers = (
+        (
+            "# BEGIN PHYLAX_MCP_LLM_LAYER_IMPORT",
+            "# END PHYLAX_MCP_LLM_LAYER_IMPORT",
+            "phylax_mcp_llm_layer.py",
+        ),
+        (
+            "# BEGIN PHYLAX_LLM_LAYER_IMPORT",
+            "# END PHYLAX_LLM_LAYER_IMPORT",
+            "phylax_llm_layer.py",
+        ),
+    )
+    for layer_start, layer_end, layer_name in layers:
+        if layer_start not in source:
+            continue
+        layer_path = Path(__file__).resolve().parents[1] / "agent" / layer_name
         layer = layer_path.read_text(encoding="utf-8")
         start = source.index(layer_start)
         end = source.index(layer_end, start) + len(layer_end)
         source = source[:start] + layer.rstrip() + source[end:]
+        break
     lines = source.splitlines(keepends=True)
     comment_columns: dict[int, int] = {}
     removals = _docstring_spans(source)

@@ -2516,6 +2516,15 @@ _POLYGLOT_INSTALL_KEYS = frozenset({
     "pre-install-cmd", "post-install-cmd", "pre-update-cmd", "post-update-cmd",
 })
 _POLYGLOT_CVE = {
+    ("npm", "lodash"): ("4.17.21", "CVE-2021-23337"),
+    ("npm", "minimist"): ("1.2.6", "CVE-2021-44906"),
+    ("npm", "axios"): ("0.21.2", "CVE-2021-3749"),
+    ("npm", "node-fetch"): ("2.6.7", "CVE-2022-0235"),
+    ("npm", "tough-cookie"): ("4.1.3", "CVE-2023-26136"),
+    ("npm", "jsonwebtoken"): ("9.0.0", "CVE-2022-23529"),
+    ("npm", "moment"): ("2.29.4", "CVE-2022-31129"),
+    ("pypi", "pyyaml"): ("5.4", "CVE-2020-14343"),
+    ("pypi", "jinja2"): ("3.1.4", "CVE-2024-34064"),
     ("crates", "time"): ("0.2.23", "CVE-2020-26235"),
     ("rubygems", "rack"): ("2.2.6", "CVE-2022-44570"),
     ("composer", "symfony/http-foundation"): ("5.4.31", "CVE-2023-46733"),
@@ -2538,7 +2547,10 @@ def _package_version_before(value: str, fixed: str) -> bool:
 def _polyglot_dependencies(files: list[_File]) -> list[dict]:
     dependencies: dict[tuple[str, str], dict] = {}
 
-    def add(ecosystem: str, name: str, version: str) -> None:
+    def add(
+        ecosystem: str, name: str, version: str, source: str,
+        *, resolved: bool = False,
+    ) -> None:
         clean = str(name).strip()
         if not clean:
             return
@@ -2548,14 +2560,124 @@ def _polyglot_dependencies(files: list[_File]) -> list[dict]:
             "version": str(version).strip(),
             "ecosystem": ecosystem,
             "cve": [],
+            "source": source,
         }
         rule = _POLYGLOT_CVE.get(key)
-        if rule and _package_version_before(item["version"], rule[0]):
+        # A range such as lodash ^4.17.20 resolves to the patched 4.17.21 and
+        # is not proof of a vulnerable install. Only exact declarations or
+        # resolved lockfile versions are concrete enough for a finding.
+        exact = bool(re.fullmatch(
+            r"\s*(?:==|=|v)?\s*\d+(?:\.\d+){0,3}(?:[-+][A-Za-z0-9.-]+)?\s*",
+            item["version"],
+        ))
+        if rule and (resolved or exact) and _package_version_before(
+            item["version"], rule[0]
+        ):
             item["cve"] = [rule[1]]
-        dependencies.setdefault(key, item)
+        previous = dependencies.get(key)
+        if previous is None or (resolved and not previous.get("resolved")):
+            item["resolved"] = resolved
+            dependencies[key] = item
 
     for f in files:
-        if f.base == "cargo.toml":
+        if f.base == "package.json":
+            try:
+                data = json.loads(f.text)
+            except (ValueError, TypeError):
+                data = {}
+            if isinstance(data, dict):
+                for section in (
+                    "dependencies", "devDependencies", "optionalDependencies",
+                ):
+                    block = data.get(section)
+                    if isinstance(block, dict):
+                        for name, version in block.items():
+                            add("npm", str(name), str(version), f.rel)
+        elif f.base in ("package-lock.json", "npm-shrinkwrap.json"):
+            try:
+                data = json.loads(f.text)
+            except (ValueError, TypeError):
+                data = {}
+            packages = data.get("packages") if isinstance(data, dict) else None
+            if isinstance(packages, dict):
+                for path, value in packages.items():
+                    if (
+                        str(path).startswith("node_modules/")
+                        and isinstance(value, dict)
+                    ):
+                        add(
+                            "npm", str(path).split("node_modules/", 1)[1],
+                            str(value.get("version", "")), f.rel, resolved=True,
+                        )
+            dependencies_block = (
+                data.get("dependencies") if isinstance(data, dict) else None
+            )
+            if isinstance(dependencies_block, dict):
+                for name, value in dependencies_block.items():
+                    if isinstance(value, dict):
+                        add(
+                            "npm", str(name), str(value.get("version", "")),
+                            f.rel, resolved=True,
+                        )
+        elif f.base.startswith("requirements") and f.base.endswith(".txt"):
+            for line in f.lines:
+                match = re.match(
+                    r"\s*([A-Za-z0-9_.-]+)\s*(==|>=|<=|~=|>|<)\s*"
+                    r"([0-9][A-Za-z0-9.+-]*)",
+                    line,
+                )
+                if match:
+                    spec = (
+                        "==" + match.group(3)
+                        if match.group(2) == "==" else match.group(2) + match.group(3)
+                    )
+                    add("pypi", match.group(1), spec, f.rel)
+        elif f.base in ("pyproject.toml", "setup.py", "setup.cfg"):
+            # Parse quoted PEP 508-style requirements. As above, only an exact
+            # pin is concrete CVE evidence; lower bounds remain inventory only.
+            for name, operator, version in re.findall(
+                r"""["']([A-Za-z0-9_.-]+)\s*"""
+                r"""(==|>=|<=|~=|>|<)\s*([0-9][A-Za-z0-9.+-]*)""",
+                f.text,
+            ):
+                add(
+                    "pypi", name,
+                    ("==" if operator == "==" else operator) + version,
+                    f.rel,
+                )
+        elif f.base == "pipfile.lock":
+            try:
+                data = json.loads(f.text)
+            except (ValueError, TypeError):
+                data = {}
+            if isinstance(data, dict):
+                for section in ("default", "develop"):
+                    block = data.get(section)
+                    if not isinstance(block, dict):
+                        continue
+                    for name, value in block.items():
+                        version = (
+                            value.get("version", "")
+                            if isinstance(value, dict) else value
+                        )
+                        add(
+                            "pypi", str(name), str(version), f.rel,
+                            resolved=True,
+                        )
+        elif f.base == "poetry.lock":
+            for block in re.split(r"(?m)^\s*\[\[package\]\]\s*$", f.text)[1:]:
+                name = re.search(
+                    r"""(?m)^\s*name\s*=\s*["']([^"']+)["']""", block
+                )
+                version = re.search(
+                    r"""(?m)^\s*version\s*=\s*["']([^"']+)["']""", block
+                )
+                if name and version:
+                    add(
+                        "pypi", name.group(1), version.group(1), f.rel,
+                        resolved=True,
+                    )
+        elif f.base == "cargo.toml":
             in_dependencies = False
             for line in f.lines:
                 section = re.match(r"\s*\[([^\]]+)\]", line)
@@ -2570,7 +2692,20 @@ def _polyglot_dependencies(files: list[_File]) -> list[dict]:
                     line,
                 )
                 if match:
-                    add("crates", match.group(1), match.group(2))
+                    add("crates", match.group(1), match.group(2), f.rel)
+        elif f.base == "cargo.lock":
+            for block in re.split(r"(?m)^\s*\[\[package\]\]\s*$", f.text)[1:]:
+                name = re.search(
+                    r"""(?m)^\s*name\s*=\s*["']([^"']+)["']""", block
+                )
+                version = re.search(
+                    r"""(?m)^\s*version\s*=\s*["']([^"']+)["']""", block
+                )
+                if name and version:
+                    add(
+                        "crates", name.group(1), version.group(1), f.rel,
+                        resolved=True,
+                    )
         elif f.base == "composer.json":
             try:
                 data = json.loads(f.text)
@@ -2582,14 +2717,52 @@ def _polyglot_dependencies(files: list[_File]) -> list[dict]:
                     if isinstance(block, dict):
                         for name, version in block.items():
                             if str(name).lower() != "php":
-                                add("composer", str(name), str(version))
-        elif f.base in ("gemfile", "gemfile.lock") or f.suffix == ".gemspec":
+                                add("composer", str(name), str(version), f.rel)
+        elif f.base == "composer.lock":
+            try:
+                data = json.loads(f.text)
+            except (ValueError, TypeError):
+                data = {}
+            if isinstance(data, dict):
+                for section in ("packages", "packages-dev"):
+                    block = data.get(section)
+                    if not isinstance(block, list):
+                        continue
+                    for item in block:
+                        if isinstance(item, dict):
+                            add(
+                                "composer", str(item.get("name", "")),
+                                str(item.get("version", "")), f.rel,
+                                resolved=True,
+                            )
+        elif f.base == "gemfile.lock":
+            for name, version in re.findall(
+                r"(?m)^\s{4}([A-Za-z0-9_.-]+)\s+\(([0-9][A-Za-z0-9.+-]*)\)",
+                f.text,
+            ):
+                add("rubygems", name, version, f.rel, resolved=True)
+        elif f.base == "gemfile" or f.suffix == ".gemspec":
             for name, version in re.findall(
                 r"""(?:gem\s+|add_(?:runtime_)?dependency\s*\(?\s*)"""
                 r"""["']([^"']+)["'](?:\s*,\s*["']([^"']+)["'])?""",
                 f.text,
             ):
-                add("rubygems", name, version)
+                add("rubygems", name, version, f.rel)
+        elif f.base == "yarn.lock":
+            for name, version in re.findall(
+                r"""(?m)^(?:["'])?((?:@[^/\s@]+/)?[^@\s"']+)"""
+                r"""@[^:\n]+:(?:["'])?\s*\n"""
+                r"""(?:\s{2}[^\n]*\n){0,5}?\s{2}version\s+["']([^"']+)["']""",
+                f.text,
+            ):
+                add("npm", name, version, f.rel, resolved=True)
+        elif f.base in ("pnpm-lock.yaml", "pnpm-lock.yml"):
+            for name, version in re.findall(
+                r"(?m)^\s{2,}((?:@[^/:\s]+/)?[^@:\s]+)"
+                r"@([0-9][A-Za-z0-9.+-]*):\s*$",
+                f.text,
+            ):
+                add("npm", name, version, f.rel, resolved=True)
     return list(dependencies.values())
 
 
@@ -2801,11 +2974,66 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
             str(dependency.get("ecosystem", "")),
             str(dependency.get("name", "")).lower(),
         )
-        if key not in known:
+        if key in known:
+            continue
+        # The baseline inventory intentionally records only a dependency name.
+        # Enrich that record instead of emitting a duplicate SBOM entry.
+        plain = next(
+            (
+                item for item in dependencies
+                if not str(item.get("ecosystem", ""))
+                and str(item.get("name", "")).lower() == key[1]
+            ),
+            None,
+        )
+        if plain is not None:
+            plain.update(dependency)
+        else:
             dependencies.append(dependency)
-            known.add(key)
+        known.add(key)
     supply_chain["dependencies"] = dependencies
     evidence["supply_chain"] = supply_chain
+    vulnerable = [
+        dependency for dependency in dependencies if dependency.get("cve")
+    ]
+    if vulnerable:
+        report["verdict"] = {
+            "decision": (
+                "BLOCK"
+                if (report.get("verdict") or {}).get("decision") == "BLOCK"
+                else "WARN"
+            ),
+            "risk_score": max(
+                58, int((report.get("verdict") or {}).get("risk_score", 0))
+            ),
+            "confidence": max(
+                0.86, float((report.get("verdict") or {}).get("confidence", 0.0))
+            ),
+        }
+        for dependency in vulnerable:
+            ref = str(dependency.get("source") or "package.json")
+            if any(
+                isinstance(item, dict)
+                and item.get("category") == "dependency_cve"
+                and item.get("evidence_ref") == ref
+                and str(dependency.get("name") or "").lower()
+                in str(item.get("title") or "").lower()
+                for item in existing_findings
+            ):
+                continue
+            existing_findings.append({
+                "category": "dependency_cve",
+                "severity": "HIGH",
+                "plane": "action",
+                "title": (
+                    f"Dependency {dependency.get('name')} "
+                    f"{dependency.get('version')} is affected by "
+                    + ", ".join(str(cve) for cve in dependency.get("cve") or [])
+                ),
+                "evidence_ref": ref,
+                "location": "line 1",
+            })
+        report["findings"] = existing_findings
     report["evidence"] = evidence
     return report
 

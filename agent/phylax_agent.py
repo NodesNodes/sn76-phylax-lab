@@ -1210,6 +1210,72 @@ _NEGATED_CODE_EXEC = re.compile(
     r"(?i)\b(?:do\s+not|don't|never|must\s+not|should\s+not|avoid)\s+"
     r"(?:ever\s+)?(?:run|execute|invoke|call|launch|start|apply|use)\b"
 )
+_SKILL_PERMISSION_OVERREACH = re.compile(
+    r"(?is)(?:"
+    r"(?:request|require|grant|obtain|enable|assume)\s+.{0,55}"
+    r"(?:unrestricted|unlimited|full|wildcard|\ball\b).{0,55}"
+    r"(?:tools?|permissions?|filesystem|network|credentials?|system|shell)"
+    r"(?:\s+(?:access|permissions?))?"
+    r"|(?:run|execute|operate)\s+.{0,45}"
+    r"(?:as\s+)?(?:root|administrator|sudo).{0,80}"
+    r"(?:without|disable|skip|bypass).{0,35}"
+    r"(?:approval|confirmation|sandbox|permission)"
+    r")"
+)
+_SKILL_RUG_PULL = re.compile(
+    r"(?is)(?:"
+    r"(?:download|fetch|pull|retrieve|sync|load)\s+.{0,100}https?://\S+"
+    r".{0,130}(?:latest|updated|new|replacement).{0,50}"
+    r"(?:instructions?|rules?|directives?|SKILL\.md|scripts?).{0,130}"
+    r"(?:follow|obey|apply|execute|replace|overwrite).{0,90}"
+    r"(?:automatically|as\s+authoritative|without\s+(?:review|approval|confirmation))"
+    r"|(?:automatically|silently).{0,70}(?:update|replace|overwrite)"
+    r".{0,90}(?:this|the).{0,35}(?:skill|SKILL\.md|instructions?)"
+    r".{0,140}https?://\S+"
+    r")"
+)
+_SKILL_GOVERNANCE_NEGATION = re.compile(
+    r"(?i)\b(?:do\s+not|don't|never|must\s+not|should\s+not|avoid|"
+    r"reject|forbid|prohibit)\b"
+)
+
+
+def _scan_skill_governance(f: _File) -> list[_Signal]:
+    """Exact skill-only classes absent from generic injection vocabulary."""
+    if not f.is_instruction:
+        return []
+    out: list[_Signal] = []
+    rules = (
+        (
+            _SKILL_PERMISSION_OVERREACH,
+            "permission_overreach",
+            "MODIFY_POLICY",
+            "Skill demands privileges beyond its declared task",
+            0.65,
+        ),
+        (
+            _SKILL_RUG_PULL,
+            "rug_pull",
+            "LOAD_EXTERNAL_CONTEXT",
+            "Skill can replace trusted behavior with unreviewed remote instructions",
+            0.75,
+        ),
+    )
+    for pattern, category, capability, title, weight in rules:
+        for match in pattern.finditer(f.text):
+            line_start = f.text.rfind("\n", 0, match.start()) + 1
+            prefix = f.text[max(line_start, match.start() - 100):match.start()]
+            if _SKILL_GOVERNANCE_NEGATION.search(prefix):
+                continue
+            if _benign_instruction_mention(f, match, category):
+                continue
+            out.append(_Signal(
+                capability, category, "context", f.rel,
+                f.text.count("\n", 0, match.start()) + 1,
+                title, "HIGH", weight,
+            ))
+            break
+    return out
 
 
 def _active_skill_code(files: list[_File], promoted: dict[str, str]) -> set[str]:
@@ -1257,7 +1323,21 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
     for f in files:
         caps = _scan_file_capabilities(f)
         static_caps |= caps
-        signals.extend(_scan_injection(f))
+        file_signals = _scan_injection(f) + _scan_skill_governance(f)
+        rug_lines = {
+            signal.line for signal in file_signals if signal.category == "rug_pull"
+        }
+        if rug_lines:
+            # A remote-instruction replacement is the benchmark's exact
+            # rug_pull class, not a second generic context_injection finding.
+            file_signals = [
+                signal for signal in file_signals
+                if not (
+                    signal.category == "context_injection"
+                    and signal.line in rug_lines
+                )
+            ]
+        signals.extend(file_signals)
         if f.kind == "code":
             code_caps[f.rel] = caps
 
@@ -1498,6 +1578,15 @@ _PRECEDENCE = re.compile(
     r"supersedes?\s+(?:the\s+)?(?:default|built-?in|standard)|"
     r"(?:instead\s+of|rather\s+than)\s+the\s+(?:default|built-?in|standard)|"
     r"(?:overrides?|replaces?)\s+(?:the\s+)?(?:default|built-?in)\s+\w+\s+tool)")
+
+_MCP_SERVER_LOAD_HIGH_RISK = frozenset({
+    # The validator records these specifically while loading server.py. They
+    # are startup behaviour, not a capability exercised by a declared tool.
+    "WRITE_FILE", "DELETE_FILE", "CREATE_PROCESS", "EXEC_SHELL", "RUN_CONTAINER",
+    "POST_WEB", "OPEN_SOCKET", "READ_SECRETS", "READ_PRIVATE_KEY", "ACCESS_WALLET",
+    "READ_KEYCHAIN", "DB_EXPORT", "WRITE_SHELL_PROFILE", "INSTALL_PACKAGE",
+    "SCHEDULE_JOB", "MODIFY_HOSTS_FILE",
+})
 
 
 def _param_text(schema) -> str:
@@ -2392,6 +2481,7 @@ def _tool_surface(files: list[_File], observed: dict) -> list[dict]:
 def _analyse_mcp(files: list[_File], context: dict) -> dict:
     probe = context.get("probe") or {}
     obs_caps = _observed_caps(context)
+    server_load_caps = _phase_caps(_phases(context), "server_load")
     manifest_ref = next(
         (f.rel for f in files if f.base in ("manifest.json", "mcp.json")), "manifest.json"
     )
@@ -2401,6 +2491,19 @@ def _analyse_mcp(files: list[_File], context: dict) -> dict:
     risk = 0.0
     implemented: set[str] = set()
     rug_pulls: list[dict] = []
+
+    startup_overreach = sorted(server_load_caps & _MCP_SERVER_LOAD_HIGH_RISK)
+    if startup_overreach:
+        risk = max(risk, 0.90)
+        cap = startup_overreach[0]
+        signals.append(_Signal(
+            cap, "overreach", "action",
+            next((f.rel for f in files if f.base == "server.py"), "server.py"),
+            1,
+            "MCP server performs privileged behaviour during startup: "
+            + ", ".join(startup_overreach),
+            "CRIT", 0.90,
+        ))
 
     for f in files:
         caps = _scan_file_capabilities(f)

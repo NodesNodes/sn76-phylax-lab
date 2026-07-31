@@ -229,6 +229,246 @@ def _first_line(lines: list[str], pattern: str, flags: int = re.I) -> int:
     regex = re.compile(pattern, flags)
     return next((number for number, line in enumerate(lines, 1) if regex.search(line)), 1)
 
+def _python_regions(lines: list[str], kind: str, *, top_level: bool = False) -> list[dict]:
+    """Split Python source into indentation-bounded lexical regions."""
+    marker = re.compile(
+        rf"^(\s*){re.escape(kind)}\s+([A-Za-z_]\w*)"
+        + (r"\s*\(([^)]*)\)" if kind == "def" else r"\s*(?:\([^)]*\))?\s*:")
+    )
+    out: list[dict] = []
+    for start, line in enumerate(lines):
+        match = marker.match(line)
+        if not match:
+            continue
+        indent = len(match.group(1).expandtabs(8))
+        if top_level and indent:
+            continue
+        end = start + 1
+        while end < len(lines):
+            candidate = lines[end]
+            if candidate.strip():
+                candidate_indent = len(candidate) - len(candidate.lstrip(" \t"))
+                if candidate_indent <= indent:
+                    break
+            end += 1
+        out.append({
+            "name": match.group(2),
+            "parameters": (
+                {
+                    piece.split(":", 1)[0].split("=", 1)[0].strip().lstrip("*")
+                    for piece in match.group(3).split(",")
+                    if piece.strip()
+                }
+                if kind == "def" else set()
+            ),
+            "start": start,
+            "end": end,
+            "indent": indent,
+            "lines": lines[start:end],
+            "text": "\n".join(lines[start:end]),
+        })
+    return out
+
+
+def _lexical_aliases(lines: list[str], seeds: set[str]) -> set[str]:
+    """Propagate parameter/source names through simple textual assignments."""
+    names = {name for name in seeds if name not in {"self", "cls"}}
+    changed = True
+    while changed:
+        changed = False
+        for line in lines:
+            match = ASSIGNMENT.search(line)
+            if not match:
+                continue
+            rhs = line[match.end():]
+            if re.search(r"\b(?:shlex\.quote|int|float|secure_filename)\s*\(", rhs):
+                continue
+            if (
+                SOURCE_MARKERS.search(rhs)
+                or any(re.search(rf"\b{re.escape(name)}\b", rhs) for name in names)
+            ) and match.group(1) not in names:
+                names.add(match.group(1))
+                changed = True
+    return names
+
+
+def _surface_uses_name(text: str, names: set[str]) -> bool:
+    return bool(
+        SOURCE_MARKERS.search(text)
+        or any(re.search(rf"\b{re.escape(name)}\b", text) for name in names)
+    )
+
+
+def _surface_shell_sink(text: str, names: set[str]) -> bool:
+    for match in re.finditer(
+        r"subprocess\.(?:run|call|check_call|check_output|Popen)"
+        r"\s*\((.{0,800}?)\)",
+        text,
+        re.I | re.S,
+    ):
+        arguments = match.group(1)
+        if re.search(r"\bshell\s*=\s*True\b", arguments, re.I) and _surface_uses_name(
+            arguments.split(",", 1)[0], names
+        ):
+            return True
+    return any(
+        _surface_uses_name(match.group(1), names)
+        for match in re.finditer(
+            r"\b(?:os\.(?:system|popen)|subprocess\.(?:getoutput|getstatusoutput))"
+            r"\s*\((.{0,500}?)\)",
+            text,
+            re.I | re.S,
+        )
+    )
+
+
+def _surface_module_name(path: str) -> str:
+    normal = _normal_path(path)
+    if not normal.endswith(".py"):
+        return ""
+    module = normal[:-3].strip("/").replace("/", ".")
+    return module[:-9] if module.endswith(".__init__") else module
+
+
+def _shell_surface_functions(file: dict[str, Any]) -> set[str]:
+    """Build a lexical parameter-to-shell call graph for one Python module."""
+    lines = file["lines"]
+    functions = _python_regions(lines, "def", top_level=True)
+    classes = _python_regions(lines, "class", top_level=True)
+    dangerous_classes: set[str] = set()
+    for cls in classes:
+        methods = _python_regions(cls["lines"], "def")
+        init = next((method for method in methods if method["name"] == "__init__"), None)
+        if init is None:
+            continue
+        parameter_attrs: set[str] = set()
+        for line in init["lines"]:
+            match = re.search(
+                r"\bself\.([A-Za-z_]\w*)\s*=\s*([A-Za-z_]\w*)\b", line
+            )
+            if match and match.group(2) in init["parameters"]:
+                parameter_attrs.add(match.group(1))
+        if parameter_attrs and _surface_shell_sink(
+            cls["text"], {f"self.{name}" for name in parameter_attrs}
+        ):
+            dangerous_classes.add(cls["name"])
+
+    dangerous_functions: set[str] = set()
+    for _ in range(6):
+        before = len(dangerous_functions)
+        for function in functions:
+            aliases = _lexical_aliases(
+                function["lines"], set(function["parameters"])
+            )
+            if _surface_shell_sink(function["text"], aliases):
+                dangerous_functions.add(function["name"])
+                continue
+            for class_name in dangerous_classes:
+                for line in function["lines"]:
+                    match = re.search(
+                        rf"\b([A-Za-z_]\w*)\s*=\s*{re.escape(class_name)}"
+                        r"\s*\(([^)]*)\)",
+                        line,
+                    )
+                    if (
+                        match
+                        and _surface_uses_name(match.group(2), aliases)
+                        and re.search(
+                            rf"\b{re.escape(match.group(1))}"
+                            r"\.(?:execute|run|start|invoke)\s*\(",
+                            function["text"],
+                        )
+                    ):
+                        dangerous_functions.add(function["name"])
+                        break
+                if function["name"] in dangerous_functions:
+                    break
+            if function["name"] in dangerous_functions:
+                continue
+            for callee in dangerous_functions:
+                for match in re.finditer(
+                    rf"\b{re.escape(callee)}\s*\(([^)\n]*)\)",
+                    function["text"],
+                ):
+                    if _surface_uses_name(
+                        match.group(1).split(",", 1)[0], aliases
+                    ):
+                        dangerous_functions.add(function["name"])
+                        break
+                if function["name"] in dangerous_functions:
+                    break
+        if len(dangerous_functions) == before:
+            break
+    return dangerous_functions
+
+
+def _imported_shell_surfaces(
+    file: dict[str, Any], modules: dict[str, set[str]]
+) -> set[str]:
+    text = file["text"]
+    calls = set(modules.get(_surface_module_name(file["path"]), set()))
+    for match in re.finditer(
+        r"(?m)^\s*from\s+([.\w]+)\s+import\s+"
+        r"([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?",
+        text,
+    ):
+        module, name, alias = match.groups()
+        module = module.lstrip(".")
+        candidates = [module]
+        if "." not in module:
+            current = _surface_module_name(file["path"])
+            package = current.rsplit(".", 1)[0] if "." in current else ""
+            if package:
+                candidates.insert(0, f"{package}.{module}")
+        if any(name in modules.get(candidate, set()) for candidate in candidates):
+            calls.add(alias or name)
+    for match in re.finditer(
+        r"(?m)^\s*import\s+([\w.]+)(?:\s+as\s+([A-Za-z_]\w*))?", text
+    ):
+        module, alias = match.groups()
+        for name in modules.get(module, set()):
+            calls.add(f"{alias or module}.{name}")
+    return calls
+
+
+def _scan_shell_surface_graph(repo: Repository, out: Results) -> None:
+    """Correlate source-bearing call sites with lexical shell wrappers."""
+    modules: dict[str, set[str]] = {}
+    for file in repo.files:
+        if file["fixture"] or Path(file["path"]).suffix.lower() != ".py":
+            continue
+        functions = _shell_surface_functions(file)
+        module = _surface_module_name(file["path"])
+        if module and functions:
+            modules[module] = functions
+
+    for file in repo.files:
+        if file["fixture"] or Path(file["path"]).suffix.lower() != ".py":
+            continue
+        calls = _imported_shell_surfaces(file, modules)
+        if not calls:
+            continue
+        tainted = _tainted_names(file["lines"])
+        for number, line in enumerate(file["lines"], 1):
+            for call in calls:
+                if re.match(
+                    rf"^\s*(?:async\s+)?def\s+{re.escape(call)}\s*\(",
+                    line,
+                ):
+                    continue
+                match = re.search(
+                    rf"\b{re.escape(call)}\s*\(([^)\n]*)\)", line
+                )
+                if not match:
+                    continue
+                first_argument = match.group(1).split(",", 1)[0]
+                if _surface_uses_name(first_argument, tainted):
+                    out.vulnerability(
+                        file["path"], number, "CWE-78",
+                        "Request-derived command reaches a lexical shell execution surface",
+                    )
+                    break
+
 
 def _scan_hdf(file: dict[str, Any], out: Results) -> None:
     raw = file["raw"]
@@ -823,6 +1063,7 @@ def _report(repo: Repository) -> dict[str, Any]:
     )
     for file in repo.files:
         _scan_code(file, out, readme)
+    _scan_shell_surface_graph(repo, out)
     _scan_secrets(repo, out)
     _supply_chain(repo, out)
     risky_dependency = any(dependency["cve"] for dependency in out.dependencies)

@@ -12,53 +12,76 @@ change. The upstream subnet checkout remains read-only and lives separately at
 
 | Track | Wallet hotkey | Agent label | Version | Status |
 |---|---|---|---:|---|
-| `packages` | `sn76` | `phylax-packages-standalone-v2` | 4 | active, pending evaluation |
-| `mcp_servers` | `sn76_1` | `phylax-mcp-v1` | 1 | active |
-| `skills` | `sn76_2` | `phylax-skills-v1` | 3 | active, pending evaluation |
-| `repositories` | `sn76_3` | `phylax-repositories-independent` | 3 | active, pending evaluation |
-| `repositories` | `sn76_4` | `phylax-repositories-wave6` | 3 | active, pending evaluation |
+| `packages` | `sn76` | `phylax-packages-standalone-v2` | 6 | active, pending evaluation |
+| `mcp_servers` | `sn76_1` | `phylax-mcp-v1` | 3 | active, pending evaluation |
+| `skills` | `sn76_2` | `phylax-skills-v1` | 6 | active, pending evaluation |
+| `repositories` | `sn76_3` | `phylax-repositories-independent` | 6 | active, pending evaluation |
+| `repositories` | `sn76_4` | `phylax-repositories-wave6` | 6 | active, pending evaluation |
 
-All profiles use entrypoint `agent_main`. Skills and repositories have
-standalone sources; packages now runs its standalone v2 while MCP retains the
-universal dispatcher:
+All profiles use entrypoint `agent_main`. Every track now has a standalone
+source. MCP version 2 switched `sn76_1` from the universal dispatcher to the
+standalone MCP file:
 
 ```text
 agent/phylax_skills_agent.py       → skills
+agent/phylax_mcp_agent.py          → mcp_servers
 agent/phylax_packages_agent.py     → packages
 agent/phylax_repositories_agent.py → repositories (`sn76_4`)
 agent/phylax_repositories_agent_v2.py → independent repositories (`sn76_3`)
-agent/phylax_agent.py              → mcp_servers
 ```
 
 Active standalone packages v2 deploy SHA-256:
 
 ```text
-99906d06927b18449fee968fcee3a7241b583e47af4919ffb62e768344603198
+b10e00029099a18b8e3c7aed54c8034990b355bdf2970906d9c2b077fba3f875
 ```
 
-Active MCP v1 SHA-256:
+Active standalone MCP deploy SHA-256:
 
 ```text
-3b406c9879f7e4268d69e4e66ad14033cebe10fb5bb882f1bac21fa54b6bee03
+ff3b309ae8623479e57d49232728f414b32e86a4282998c3f4b6bbf4e8483e9a
 ```
 
-Active standalone skills v2 uses deploy SHA-256:
+Active standalone skills deploy SHA-256:
 
 ```text
-c9cba1fd220bb47b92c38eecde33e513bf66c3f861e78aebd21c37d88d14d8a0
+c450118cfe45bc68c665cd6c9ebe290a552a7219c518f922b14b7d6e12b274aa
 ```
 
-The parallel standalone repositories wave-6 upload uses SHA-256:
+The four hardened version 5 releases were accepted on 2026-07-31:
 
 ```text
-1974a01e1d0e7cb7154c5467e8930216dc35dfbcecf25917acc7cc355f43ebec
+09:33:41Z  packages/sn76         53ffe922d09dce18b730a15a08d113e27b6f79f2e48d360f8df503e3e8038fc6
+09:33:53Z  skills/sn76_2          48d067ce856803e27fcd7706840aa5fca0f24eec630be6b19b09a367c1f44bc3
+09:34:46Z  repositories/sn76_3    3296c664bbd37734889a673fd825c01120b702ce2f2efcd4172d3ce4266448a9
+09:34:57Z  repositories/sn76_4    e6d27033a079be79152a648400d63cb0b062387ec0fb441482a7246206178dc5
 ```
 
-The independent repositories v2 upload on `sn76_3` uses SHA-256:
+The active parallel standalone repositories wave-6 upload uses SHA-256:
 
 ```text
-b53dc5de24f91d8295b438a1de0ca9be96a29651b87da8399cc80cf5fd9c5ff2
+f666e70c524a4bb2ec6e0379a60e4b6a4977ba38608540b45fa724b9f5df2f5d
 ```
+
+The active independent repositories v2 upload on `sn76_3` uses SHA-256:
+
+```text
+b2e34da97cee38d0913c79a1f58faf520b4fb505b46e2eba9ac98def4b1ac2f3
+```
+
+The validator-owned-key compatibility releases were accepted on 2026-07-31:
+
+```text
+09:45:52Z  packages/sn76          v6  b10e00029099a18b8e3c7aed54c8034990b355bdf2970906d9c2b077fba3f875
+09:46:03Z  mcp_servers/sn76_1     v3  ff3b309ae8623479e57d49232728f414b32e86a4282998c3f4b6bbf4e8483e9a
+09:46:12Z  skills/sn76_2          v6  c450118cfe45bc68c665cd6c9ebe290a552a7219c518f922b14b7d6e12b274aa
+09:46:22Z  repositories/sn76_3    v6  b2e34da97cee38d0913c79a1f58faf520b4fb505b46e2eba9ac98def4b1ac2f3
+09:46:35Z  repositories/sn76_4    v6  f666e70c524a4bb2ec6e0379a60e4b6a4977ba38608540b45fa724b9f5df2f5d
+```
+
+These artifacts support both the current miner-key proxy and roadmap issue #8,
+where the validator owns the credential. They omit `Authorization` when
+`context.inference.api_key` is absent but still make the nonce-metered request.
 
 The server accepted the first three v1 uploads on 2026-07-29, then repositories
 v1, standalone skills v2 and the parallel repositories wave-5 profile on
@@ -68,39 +91,39 @@ implementation then replaced repositories v1 on `sn76_3`; both profiles now
 qualify for the next round. The standalone packages v2 then replaced packages
 v1 and also qualifies for its first evaluation round.
 
-On 2026-07-31 the server accepted the LLM-enabled releases for all four active
-non-MCP profiles. Packages is version 4; skills and both repository profiles
-are version 3. All four registry rows are active with evaluation state pending.
+On 2026-07-31 the server accepted the LLM-enabled releases for all five active
+profiles, the hardened version 5 successors, and finally the dual-mode
+validator-owned-key releases: version 6 for packages, skills and both
+repositories profiles, and version 3 for MCP. All five registry rows are active
+with evaluation state pending.
 
 ## Profile architecture
 
-Each hotkey is registered to exactly one specialization. Skills, repositories
-and packages are isolated into dependency-free agents; the universal source
-remains the MCP dispatcher:
+Each hotkey is registered to exactly one specialization. All five profiles now
+have isolated dependency-free agent files:
 
 ```text
- agent/phylax_skills_agent.py  agent/phylax_packages_agent.py  agent/phylax_repositories_agent.py
-              │                           │                              │
-           skills                      packages                    repositories
-              │                           │                              │
-       context + action       lifecycle + polyglot build          code audit +
-           plane                   + supply chain                 supply chain
+ skills agent       MCP agent          packages agent       repositories agents
+      │                 │                    │                       │
+ context/action   tool surface +       lifecycle +             code audit +
+     plane        intent/behaviour   polyglot supply chain      supply chain
 ```
 
-The four active non-MCP submissions now add a metered LLM adjudication pass:
+All five active submissions use a metered LLM adjudication pass:
 
 ```text
 bounded static analysis → redacted artifact dossier → validator inference proxy
         → grounded JSON review → merged risk/evidence report
 ```
 
-This covers packages (`sn76`), skills (`sn76_2`), repositories-independent
-(`sn76_3`) and repositories-wave6 (`sn76_4`). The two repository agents retain
-independent static engines but share the same inference contract. Inference is
-sent only to `context.inference.api`, carries the task nonce for validator
-metering, and falls back to the static report if the provider is temporarily
-unavailable. Artifact credentials are redacted before the dossier leaves the
-sandbox.
+This covers MCP (`sn76_1`), packages (`sn76`), skills (`sn76_2`),
+repositories-independent (`sn76_3`) and repositories-wave6 (`sn76_4`). The MCP
+layer uses conservative binary arbitration because production scoring treats
+both WARN and BLOCK as flagged: a static ALLOW is promoted only by a confident,
+high-severity review grounded in a real artifact file. Inference is sent only
+to `context.inference.api`, carries the task nonce for validator metering, and
+falls back to the static report if the provider is temporarily unavailable.
+Artifact credentials are redacted before the dossier leaves the sandbox.
 
 Each registration uses a separate env file, wallet hotkey and public label.
 See [agent/profiles.json](agent/profiles.json) for the machine-readable profile
@@ -110,7 +133,9 @@ state.
 
 | Path | Purpose |
 |---|---|
-| `agent/phylax_agent.py` | Universal source retained for MCP and legacy comparisons |
+| `agent/phylax_agent.py` | Universal analysis source retained for generation and comparisons |
+| `agent/phylax_mcp_agent.py` | Generated self-contained MCP source with LLM adjudication |
+| `agent/phylax_mcp_llm_layer.py` | MCP-only inference, grounding and MCC-safe merge layer |
 | `agent/phylax_packages_agent.py` | Active standalone packages source |
 | `agent/phylax_llm_layer.py` | Shared LLM request, grounding and report-merge layer |
 | `agent/phylax_skills_agent.py` | Generated self-contained skills source |
@@ -124,6 +149,11 @@ state.
 | `harness/trackcheck.py` | Expanded skills/packages/MCP structural regression suite |
 | `harness/packages_wave4_trackcheck.py` | Package fact/chain correlation A/B suite |
 | `harness/packages_wave5_trackcheck.py` | Polyglot package build/install lifecycle A/B suite |
+| `harness/packages_wave6_trackcheck.py` | Exact-pin and resolved-lockfile CVE A/B suite |
+| `harness/packages_llm_trackcheck.py` | Package LLM category, path, line and dependency grounding |
+| `harness/skills_wave4_trackcheck.py` | Autonomous offensive-tool governance A/B suite |
+| `harness/repositories_wave7_trackcheck.py` | Interprocedural shell-wrapper and HexStrike-shaped A/B suite |
+| `harness/repositories_wave8_trackcheck.py` | Import-grounded cross-file shell-wrapper A/B suite |
 | `harness/repositories_trackcheck.py` | Repository source/sink, lockfile and secret A/B suite |
 | `harness/repositories_wave3_trackcheck.py` | GitHub Actions and modern lockfile A/B suite |
 | `harness/repositories_wave4_trackcheck.py` | Backdoor, trusted-config, scope, secret-flow and supply-chain A/B suite |
@@ -151,9 +181,10 @@ cp .env.example .env
 cp .env.example .env.mcp
 ```
 
-The skills and repositories profiles have dedicated safe templates:
+The MCP, skills and repositories profiles have dedicated safe templates:
 
 ```bash
+cp configs/mcp.env.example .env.mcp
 cp configs/skills.env.example .env.skills
 cp configs/repositories.env.example .env.repositories
 ```
@@ -171,7 +202,7 @@ not copy it into notes, logs or commits.
 
 If `PHYLAX_INFERENCE_MODEL` is blank, the embedded production defaults select
 `mistralai/mistral-small-3.2-24b-instruct` for OpenRouter skills,
-`openai/gpt-4.1-mini` for OpenRouter packages/repositories, or
+`openai/gpt-4.1-mini` for OpenRouter MCP/packages/repositories, or
 `Qwen/Qwen3-32B-TEE` for Chutes. A profile can override these defaults. The
 ignored local env files explicitly pin the same OpenRouter mix.
 
@@ -181,16 +212,24 @@ Run the fast structural suites first:
 
 ```bash
 python3 harness/llm_layer_trackcheck.py
+python3 harness/mcp_llm_trackcheck.py
 python3 harness/trackcheck.py
+python3 harness/trackcheck.py --track mcp_servers --agent build/phylax_mcp_agent.py
 python3 harness/trackcheck.py --track skills --agent build/phylax_skills_agent.py
 python3 harness/skills_precision_trackcheck.py --agent build/phylax_skills_agent.py
+python3 harness/skills_wave3_trackcheck.py --agent build/phylax_skills_agent.py
+python3 harness/skills_wave4_trackcheck.py --agent build/phylax_skills_agent.py
 python3 harness/packages_wave4_trackcheck.py --agent build/phylax_packages_agent.py
 python3 harness/packages_wave5_trackcheck.py --agent build/phylax_packages_agent.py
+python3 harness/packages_wave6_trackcheck.py --agent build/phylax_packages_agent.py
+python3 harness/packages_llm_trackcheck.py
 python3 harness/repositories_trackcheck.py
 python3 harness/repositories_wave3_trackcheck.py
 python3 harness/repositories_wave4_trackcheck.py --agent build/phylax_repositories_agent.py
 python3 harness/repositories_wave5_trackcheck.py --agent build/phylax_repositories_agent.py
 python3 harness/repositories_wave6_trackcheck.py --agent build/phylax_repositories_agent_wave6.py
+python3 harness/repositories_wave7_trackcheck.py --agent build/phylax_repositories_agent_wave6.py
+python3 harness/repositories_wave8_trackcheck.py --agent build/phylax_repositories_agent_wave6.py
 python3 harness/rulecheck.py
 python3 harness/fuzz.py
 ```
@@ -254,6 +293,11 @@ point the selected profile at that artifact:
 python3 scripts/extract_skills_agent.py
 python3 scripts/build_submission_agent.py \
   agent/phylax_skills_agent.py build/phylax_skills_agent.py
+
+# Standalone MCP source and deploy artifact
+python3 scripts/extract_mcp_agent.py
+python3 scripts/build_submission_agent.py \
+  agent/phylax_mcp_agent.py build/phylax_mcp_agent.py
 
 # Standalone packages source and deploy artifact
 python3 scripts/build_submission_agent.py \
@@ -322,12 +366,16 @@ The complete source-by-source rationale and validator A/B history are in
 | Expanded packages suite | 1.0000 — TP 17, TN 11, FP 0, FN 0 |
 | Packages wave-4 trackcheck | 1.0000 — previous candidate 0.4130 |
 | Packages wave-5 polyglot lifecycle | 1.0000 — standalone baseline 0.3146 |
+| Packages wave-6 resolved CVEs | 1.0000 — TP 6, TN 8, FP 0, FN 0, quality 1.0 |
+| Packages strict LLM grounding | 2/4 grounded findings accepted; hallucinated dependency and invalid line rejected |
 | Expanded MCP suite | 1.0000 — TP 17, TN 18, FP 0, FN 0 |
 | Public packages corpus | 1.0000 |
 | Public MCP corpus | 1.0000 |
 | Public skills corpus | 1.0000 |
 | Expanded skills corpus | 1.0000 — TP 8, TN 6, FP 0, FN 0 |
 | Skills source trackcheck | 1.0000 — TP 13, TN 12, FP 0, FN 0 |
+| Skills wave-3 governance | 1.0000 — TP 4, TN 4, FP 0, FN 0, quality 1.0 |
+| Skills wave-4 autonomous tools | 1.0000 — TP 2, TN 2, FP 0, FN 0, quality 1.0 |
 | Public repositories corpus | 0.7600 |
 | Expanded repositories corpus | 0.8372 — 9 repositories |
 | Repository wave-2 trackcheck | 0.7275 — all 4 malicious twins at 1.0000; previous candidate 0.3837 |
@@ -335,6 +383,8 @@ The complete source-by-source rationale and validator A/B history are in
 | Repository wave-4 trackcheck | 0.7022 — all malicious twins 1.0000; all benign twins clean |
 | Repository wave-5 trackcheck | 0.6986 — all malicious twins 1.0000; all benign twins clean |
 | Repository wave-6 trackcheck | 0.6950 — all malicious twins 1.0000; all benign twins clean |
+| Repository wave-7 shell wrappers | 1.0000 — 2 malicious wrappers found; 2 benign twins clean |
+| Repository wave-8 cross-file wrappers | 1.0000 — baseline 0.5000; 2 missed flows recovered; 2 benign twins clean |
 | Real skills precision smoke | 892 artifacts; 0 decisions changed |
 | Rulecheck | 22/22 |
 | Fuzz | 88/88 |
@@ -351,6 +401,10 @@ For the full chronology:
 - [skills second source pass](notes/2026-07-29-skills-wave2.md)
 - [packages wave-4 fact correlation](notes/2026-07-29-packages-wave4.md)
 - [standalone packages agent and wave-5 lifecycle](notes/2026-07-30-packages-standalone.md)
+- [skills/packages HexStrike-derived hardening](notes/2026-07-31-skills-packages-hexstrike.md)
+- [independent sn76_3 lexical surface graph](notes/2026-07-31-repositories-independent-wave8.md)
+- [four version 5 submission receipts](notes/2026-07-31-version5-submission-receipts.md)
+- [validator-owned inference key compatibility](notes/2026-07-31-llm-validator-key-compat.md)
 - [repositories wave-2 improvements](notes/2026-07-29-repositories-wave2.md)
 - [repositories wave-3 CI/workflow improvements](notes/2026-07-29-repositories-wave3.md)
 - [repositories wave-6 and sn76_4 v2 receipt](notes/2026-07-30-repositories-wave6.md)

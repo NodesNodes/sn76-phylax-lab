@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline contract test for all four active LLM-enabled submissions."""
+"""Offline contract test for all five LLM-enabled deploy artifacts."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 AGENTS = (
     ("skills", ROOT / "build/phylax_skills_agent.py"),
+    ("mcp_servers", ROOT / "build/phylax_mcp_agent.py"),
     ("packages", ROOT / "build/phylax_packages_agent.py"),
     ("repositories", ROOT / "build/phylax_repositories_agent.py"),
     ("repositories", ROOT / "build/phylax_repositories_agent_wave6.py"),
@@ -40,15 +41,22 @@ class FakeResponse:
 
 
 def fake_urlopen(request, timeout=0):
+    body = json.loads(request.data)
+    dossier = json.loads(body["messages"][1]["content"])
+    track = dossier["track"]
     REQUESTS.append({
         "url": request.full_url,
         "headers": dict(request.header_items()),
-        "body": json.loads(request.data),
+        "body": body,
         "timeout": timeout,
     })
     finding = {
         "kind": "vulnerability",
-        "category": "command_injection",
+        "category": (
+            "instruction_injection" if track == "skills"
+            else "credential_theft" if track == "packages"
+            else "command_injection"
+        ),
         "severity": "HIGH",
         "title": "Untrusted value reaches a command execution sink",
         "description": "The supplied source demonstrates an unsafe command flow.",
@@ -94,52 +102,65 @@ def main() -> int:
                 f"Configuration example: api_key = \"{ARTIFACT_SECRET}\"\n",
                 encoding="utf-8",
             )
-            for index, (track, path) in enumerate(AGENTS):
-                context = {
-                    "track": track,
-                    "artifact_dir": str(artifact),
-                    "nonce": f"nonce-{index}",
-                    "probe": {
-                        "file_path": str(root / f"probe-{index}"),
-                        "file_content": "ok",
-                        "dns_host": "localhost",
-                        "process_echo": "ok",
-                        "canary": "ok",
-                    },
-                    "inference": {
+            for credential_mode in ("agent_key", "validator_proxy"):
+                for index, (track, path) in enumerate(AGENTS):
+                    request_index = len(REQUESTS)
+                    inference = {
                         "api": "http://phylax-proxy:8900",
-                        "api_key": "sk-or-test-key",
                         "provider": "openrouter",
                         "model": "",
-                    },
-                }
-                report = load(path, index).agent_main(context)
-                llm = report["evidence"]["llm_analysis"]
-                assert llm["used"] is True and llm["status"] == "ok", (path, llm)
-                assert report["verdict"]["risk_score"] >= 80, (path, report["verdict"])
-                assert any(item.get("source") == "llm" for item in report["findings"]), path
-                if track == "repositories":
+                    }
+                    if credential_mode == "agent_key":
+                        inference["api_key"] = "sk-or-test-key"
+                    context = {
+                        "track": track,
+                        "artifact_dir": str(artifact),
+                        "nonce": f"nonce-{request_index}",
+                        "probe": {
+                            "file_path": str(root / f"probe-{request_index}"),
+                            "file_content": "ok",
+                            "dns_host": "localhost",
+                            "process_echo": "ok",
+                            "canary": "ok",
+                        },
+                        "inference": inference,
+                    }
+                    report = load(path, request_index).agent_main(context)
+                    llm = report["evidence"]["llm_analysis"]
+                    assert llm["used"] is True and llm["status"] == "ok", (path, llm)
+                    assert llm["credential_mode"] == credential_mode, (path, llm)
+                    assert report["verdict"]["risk_score"] >= 80, (path, report["verdict"])
                     assert any(
-                        item.get("source") == "llm"
-                        for item in report["evidence"]["vulnerabilities"]
+                        item.get("source") == "llm" for item in report["findings"]
                     ), path
-        assert len(REQUESTS) == len(AGENTS), len(REQUESTS)
+                    if track == "repositories":
+                        assert any(
+                            item.get("source") == "llm"
+                            for item in report["evidence"]["vulnerabilities"]
+                        ), path
+        assert len(REQUESTS) == 2 * len(AGENTS), len(REQUESTS)
         for index, request in enumerate(REQUESTS):
             headers = {key.lower(): value for key, value in request["headers"].items()}
             assert request["url"] == "http://phylax-proxy:8900/v1/chat/completions"
-            assert headers["authorization"] == "Bearer sk-or-test-key"
+            if index < len(AGENTS):
+                assert headers["authorization"] == "Bearer sk-or-test-key"
+            else:
+                assert "authorization" not in headers
             assert headers["x-phylax-provider"] == "openrouter"
             assert headers["x-phylax-nonce"] == f"nonce-{index}"
             expected_model = (
-                "mistralai/mistral-small-3.2-24b-instruct"
-                if index == 0 else "openai/gpt-4.1-mini"
+                "mistralai/mistral-small-3.2-24b-instruct" if index % len(AGENTS) == 0
+                else "openai/gpt-4.1-mini"
             )
             assert request["body"]["model"] == expected_model
             serialized = json.dumps(request["body"])
             assert ARTIFACT_SECRET not in serialized
             assert "<redacted-secret>" in serialized
             assert request["body"]["response_format"]["type"] == "json_schema"
-        print("llm layer: 4/4 active agents passed proxy, merge, grounding and redaction")
+        print(
+            "llm layer: 5/5 agents passed current-key and validator-key proxy "
+            "modes, merge, grounding and redaction"
+        )
         return 0
     finally:
         urllib.request.urlopen = original_urlopen

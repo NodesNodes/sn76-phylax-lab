@@ -11,6 +11,20 @@ from pathlib import Path
 
 ROOT_SYMBOLS = ("_read_files", "_analyse_skills", "_proof_of_execution")
 
+LLM_IMPORT = '''
+# BEGIN PHYLAX_LLM_LAYER_IMPORT
+import importlib.util as _llm_importlib
+_llm_spec = _llm_importlib.spec_from_file_location(
+    "phylax_llm_layer", Path(__file__).with_name("phylax_llm_layer.py")
+)
+if _llm_spec is None or _llm_spec.loader is None:
+    raise ImportError("cannot load phylax_llm_layer")
+_llm_module = _llm_importlib.module_from_spec(_llm_spec)
+_llm_spec.loader.exec_module(_llm_module)
+_llm_enhance = _llm_module._llm_enhance
+# END PHYLAX_LLM_LAYER_IMPORT
+'''
+
 ENTRYPOINT = '''
 # --------------------------------------------------------------------------- #
 # skills-only entrypoint
@@ -22,14 +36,16 @@ def agent_main(context: dict | None = None) -> dict:
     probe = context.get("probe")
     probe = probe if isinstance(probe, dict) else {}
 
+    files = []
     try:
-        return _analyse_skills(_read_files(artifact_dir), context)
+        files = _read_files(artifact_dir)
+        report = _analyse_skills(files, context)
     except Exception as exc:
         try:
             poe = _proof_of_execution(probe)
         except Exception:
             poe = {"probe_evidence": {}, "traces": {}}
-        return {
+        report = {
             "verdict": {"decision": "WARN", "risk_score": 50, "confidence": 0.1},
             "evidence": {
                 "proof_of_execution": poe,
@@ -46,6 +62,7 @@ def agent_main(context: dict | None = None) -> dict:
             },
             "findings": [],
         }
+    return _llm_enhance(report, files, context, "skills")
 '''
 
 
@@ -124,6 +141,8 @@ def extract(source_path: Path) -> str:
         header
         + "\n"
         + "\n".join(regular_imports)
+        + "\n"
+        + LLM_IMPORT
         + "\n\n"
         + "\n\n".join(bodies)
     )

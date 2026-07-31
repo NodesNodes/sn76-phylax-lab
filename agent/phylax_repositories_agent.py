@@ -1767,7 +1767,232 @@ def _python_compile_execute_vulnerabilities(
         )]
     return []
 
-def _python_repository_vulnerabilities(f: _File) -> list[dict]:
+def _python_shell_wrapper_names(tree) -> set[str]:
+    """Summarise parameter-to-shell wrappers, including executor objects.
+
+    Security orchestrators commonly put request parsing, command construction
+    and ``Popen(shell=True)`` in separate helpers. Treat a helper as a sink only
+    when one of its parameters demonstrably reaches that shell boundary.
+    """
+    dangerous_classes: set[str] = set()
+    for cls in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
+        init = next(
+            (
+                node for node in cls.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == "__init__"
+            ),
+            None,
+        )
+        if init is None:
+            continue
+        parameters = {
+            arg.arg for arg in (
+                list(init.args.posonlyargs) + list(init.args.args)
+                + list(init.args.kwonlyargs)
+            )
+            if arg.arg not in ("self", "cls")
+        }
+        parameter_attrs: set[str] = set()
+        for node in ast.walk(init):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = node.value
+            targets = (
+                list(node.targets) if isinstance(node, ast.Assign)
+                else [node.target]
+            )
+            if not isinstance(value, ast.Name) or value.id not in parameters:
+                continue
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                ):
+                    parameter_attrs.add(target.attr)
+        if not parameter_attrs:
+            continue
+        for method in (
+            node for node in cls.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ):
+            for call_node in (
+                node for node in ast.walk(method) if isinstance(node, ast.Call)
+            ):
+                call = _python_call_path(call_node.func)
+                shell_true = any(
+                    kw.arg == "shell"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is True
+                    for kw in call_node.keywords
+                )
+                if (
+                    call not in (
+                        "os.system", "os.popen", "subprocess.getoutput",
+                        "subprocess.getstatusoutput", *_PY_PROCESS_CALLS,
+                    )
+                    or call in _PY_PROCESS_CALLS and not shell_true
+                    or not call_node.args
+                ):
+                    continue
+                if any(
+                    isinstance(child, ast.Attribute)
+                    and isinstance(child.value, ast.Name)
+                    and child.value.id == "self"
+                    and child.attr in parameter_attrs
+                    for child in ast.walk(call_node.args[0])
+                ):
+                    dangerous_classes.add(cls.name)
+                    break
+            if cls.name in dangerous_classes:
+                break
+
+    functions = [
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    dangerous_functions: set[str] = set()
+    for _ in range(6):
+        before = len(dangerous_functions)
+        for fn in functions:
+            parameters = {
+                arg.arg for arg in (
+                    list(fn.args.posonlyargs) + list(fn.args.args)
+                    + list(fn.args.kwonlyargs)
+                )
+                if arg.arg not in ("self", "cls")
+            }
+            if not parameters:
+                continue
+            nodes = _function_body_nodes(fn)
+            tainted = set(parameters)
+            guarded = _repository_python_guards(fn, parameters)
+            dangerous_instances: set[str] = set()
+            for _pass in range(5):
+                previous_taint = len(tainted)
+                previous_instances = len(dangerous_instances)
+                for node in nodes:
+                    value = None
+                    targets: list = []
+                    if isinstance(node, ast.Assign):
+                        value, targets = node.value, list(node.targets)
+                    elif isinstance(node, ast.AnnAssign):
+                        value, targets = node.value, [node.target]
+                    elif isinstance(node, ast.NamedExpr):
+                        value, targets = node.value, [node.target]
+                    elif isinstance(node, ast.AugAssign):
+                        value, targets = node.value, [node.target]
+                    if value is None:
+                        continue
+                    if _repository_expr_uses_taint(value, tainted, guarded):
+                        for target in targets:
+                            tainted |= _assigned_names(target)
+                    if (
+                        isinstance(value, ast.Call)
+                        and _python_call_path(value.func) in dangerous_classes
+                        and any(
+                            _repository_expr_uses_taint(arg, tainted, guarded)
+                            for arg in value.args
+                        )
+                    ):
+                        for target in targets:
+                            dangerous_instances |= _assigned_names(target)
+                if (
+                    len(tainted) == previous_taint
+                    and len(dangerous_instances) == previous_instances
+                ):
+                    break
+
+            for node in nodes:
+                if not isinstance(node, ast.Call):
+                    continue
+                call = _python_call_path(node.func)
+                first = node.args[0] if node.args else None
+                first_tainted = _repository_expr_uses_taint(
+                    first, tainted, guarded
+                )
+                shell_true = any(
+                    kw.arg == "shell"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is True
+                    for kw in node.keywords
+                )
+                direct_shell = (
+                    call in (
+                        "os.system", "os.popen", "subprocess.getoutput",
+                        "subprocess.getstatusoutput",
+                    )
+                    or call in _PY_PROCESS_CALLS and shell_true
+                )
+                wrapped_shell = (
+                    call.rsplit(".", 1)[-1] in dangerous_functions
+                    and first_tainted
+                )
+                instance_shell = (
+                    isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id in dangerous_instances
+                    and node.func.attr in ("execute", "run", "start", "invoke")
+                )
+                if direct_shell and first_tainted or wrapped_shell or instance_shell:
+                    dangerous_functions.add(fn.name)
+                    break
+        if len(dangerous_functions) == before:
+            break
+    return dangerous_functions
+
+def _python_module_name(rel: str) -> str:
+    path = rel.replace("\\", "/")
+    if not path.endswith(".py"):
+        return ""
+    module = path[:-3].strip("/").replace("/", ".")
+    if module.endswith(".__init__"):
+        module = module[:-9]
+    return module
+
+def _python_imported_shell_wrappers(
+    f: _File, module_wrappers: dict[str, set[str]]
+) -> set[str]:
+    """Return only dangerous wrappers explicitly imported by this file."""
+    try:
+        tree = ast.parse(f.text)
+    except (SyntaxError, ValueError):
+        return set()
+    current = _python_module_name(f.rel)
+    package = current.rsplit(".", 1)[0] if "." in current else ""
+    imported: set[str] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                wrappers = module_wrappers.get(alias.name, set())
+                prefix = alias.asname or alias.name
+                imported |= {f"{prefix}.{name}" for name in wrappers}
+        elif isinstance(node, ast.ImportFrom):
+            module = str(node.module or "")
+            if node.level:
+                parts = package.split(".") if package else []
+                keep = max(0, len(parts) - (node.level - 1))
+                prefix = ".".join(parts[:keep])
+                module = ".".join(part for part in (prefix, module) if part)
+            wrappers = module_wrappers.get(module, set())
+            for alias in node.names:
+                if alias.name in wrappers:
+                    imported.add(alias.asname or alias.name)
+                elif not node.module:
+                    submodule = ".".join(
+                        part for part in (module, alias.name) if part
+                    )
+                    for name in module_wrappers.get(submodule, set()):
+                        imported.add(
+                            f"{alias.asname or alias.name}.{name}"
+                        )
+    return imported
+
+def _python_repository_vulnerabilities(
+    f: _File, imported_shell_wrappers: set[str] | None = None
+) -> list[dict]:
 
 
 
@@ -1781,6 +2006,10 @@ def _python_repository_vulnerabilities(f: _File) -> list[dict]:
         return []
 
     out: list[dict] = []
+    shell_wrappers = (
+        _python_shell_wrapper_names(tree)
+        | set(imported_shell_wrappers or ())
+    )
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -1816,6 +2045,8 @@ def _python_repository_vulnerabilities(f: _File) -> list[dict]:
                 elif isinstance(child, ast.AnnAssign):
                     value, targets = child.value, [child.target]
                 elif isinstance(child, ast.NamedExpr):
+                    value, targets = child.value, [child.target]
+                elif isinstance(child, ast.AugAssign):
                     value, targets = child.value, [child.target]
                 if value is not None and _repository_expr_uses_taint(value, tainted, guarded):
                     for target in targets:
@@ -1866,6 +2097,16 @@ def _python_repository_vulnerabilities(f: _File) -> list[dict]:
                     "OS command injection from request-derived command",
                     "HIGH",
                     "Pass a fixed executable and argument list; validate values against an allow-list.",
+                ))
+            elif (
+                call in shell_wrappers
+                and first_tainted
+            ):
+                out.append(_repository_vulnerability(
+                    f, line, "CWE-78",
+                    "Request-derived command reaches a shell execution wrapper",
+                    "HIGH",
+                    "Pass a fixed executable and argument vector through the helper; remove shell=True.",
                 ))
             elif (
                 call in (
@@ -3289,6 +3530,20 @@ def _repository_install_scripts(files: list[_File]) -> list[dict]:
 def _analyse_repositories(files: list[_File]) -> dict:
     vulnerabilities: list[dict] = []
     secrets: list[dict] = []
+    module_shell_wrappers: dict[str, set[str]] = {}
+    for source in files:
+        if source.suffix != ".py":
+            continue
+        module = _python_module_name(source.rel)
+        if not module:
+            continue
+        try:
+            tree = ast.parse(source.text)
+        except (SyntaxError, ValueError):
+            continue
+        wrappers = _python_shell_wrapper_names(tree)
+        if wrappers:
+            module_shell_wrappers[module] = wrappers
 
     for f in files:
 
@@ -3380,7 +3635,12 @@ def _analyse_repositories(files: list[_File]) -> dict:
                 if len(accepted_lines) >= 8:
                     break
         if f.suffix == ".py" and not in_test:
-            for vuln in _python_repository_vulnerabilities(f):
+            imported_shell_wrappers = _python_imported_shell_wrappers(
+                f, module_shell_wrappers
+            )
+            for vuln in _python_repository_vulnerabilities(
+                f, imported_shell_wrappers
+            ):
 
 
 

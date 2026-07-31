@@ -55,6 +55,45 @@ _LLM_MANIFESTS = frozenset({
     "requirements.txt", "cargo.toml", "go.mod", "composer.json", "pom.xml",
     "gemfile", "dockerfile",
 })
+_LLM_REPOSITORY_SUPPLY_TYPES = {
+    "typosquat": "typosquat",
+    "typosquatting": "typosquat",
+    "dependency_confusion": "dependency_confusion",
+    "dependency-confusion": "dependency_confusion",
+    "install_script": "install_script",
+    "install-script": "install_script",
+    "malicious_install_script": "install_script",
+    "vulnerable_dependency": "vulnerable_dependency",
+    "vulnerable-dependency": "vulnerable_dependency",
+}
+_LLM_SKILL_CATEGORIES = {
+    "instruction_injection": "instruction_injection",
+    "prompt_injection": "instruction_injection",
+    "memory_poisoning": "instruction_injection",
+    "context_injection": "context_injection",
+    "system_prompt_leakage": "context_injection",
+    "transitive_leakage": "transitive_leakage",
+    "data_exfiltration": "transitive_leakage",
+    "transitive_poisoning": "transitive_poisoning",
+    "output_injection": "transitive_poisoning",
+    "permission_overreach": "permission_overreach",
+    "excessive_agency": "permission_overreach",
+    "rug_pull": "rug_pull",
+}
+_LLM_PACKAGE_CATEGORIES = {
+    "install_hook_exec": "install_hook_exec",
+    "install_script": "install_hook_exec",
+    "import_side_effect": "import_side_effect",
+    "typosquat": "typosquat",
+    "typosquatting": "typosquat",
+    "dependency_confusion": "dependency_confusion",
+    "dependency_cve": "dependency_cve",
+    "vulnerable_dependency": "dependency_cve",
+    "credential_theft": "credential_theft",
+    "data_exfiltration": "credential_theft",
+    "crypto_wallet_access": "crypto_wallet_access",
+    "wallet_access": "crypto_wallet_access",
+}
 _LLM_SCHEMA = {
     "type": "object",
     "properties": {
@@ -222,8 +261,17 @@ def _llm_request(report, files, context, track):
         _LLM_TRACK_MODELS.get(provider, {}).get(track)
         or _LLM_MODELS.get(provider, "")
     )
-    metadata = {"used": False, "provider": provider, "model": model}
-    if not all((api, key, nonce, provider, model)):
+    metadata = {
+        "used": False,
+        "provider": provider,
+        "model": model,
+        "credential_mode": "agent_key" if key else "validator_proxy",
+    }
+
+
+
+
+    if not all((api, nonce, provider, model)):
         metadata["status"] = "not_configured"
         return None, metadata
     system = (
@@ -237,6 +285,39 @@ def _llm_request(report, files, context, track):
         "backdoors, or clearly exploitable critical flows. Return only the required "
         f"JSON. Track: {track}. /no_think"
     )
+    if track == "repositories":
+        system += (
+            " Repository scoring is evidence-exact. For supply_chain findings, category "
+            "must be exactly typosquat, dependency_confusion, install_script, or "
+            "vulnerable_dependency. package must exactly equal a dependency name already "
+            "present in static_analysis.evidence.supply_chain.dependencies, except that "
+            "install_script uses an exact supplied file path. For vulnerable_dependency, "
+            "related must be a concrete CVE identifier. For typosquat, related is the "
+            "intended package. Report only HIGH or CRITICAL findings with an exact file "
+            "and line when the kind is vulnerability or secret. Omit uncertain findings."
+        )
+    elif track == "skills":
+        system += (
+            " Skills finding quality is category-and-file exact. category must be exactly "
+            "one of instruction_injection, context_injection, transitive_leakage, "
+            "transitive_poisoning, permission_overreach, or rug_pull. Use the exact "
+            "supplied file path and a real physical line. Security documentation, quoted "
+            "attack examples, explicitly negated directives, bounded permissions, and "
+            "user-reviewed updates are benign. Report only HIGH or CRITICAL active "
+            "behavior; omit speculative and merely possible concerns."
+        )
+    elif track == "packages":
+        system += (
+            " Package finding quality is category-and-file exact. category must be "
+            "exactly one of install_hook_exec, import_side_effect, typosquat, "
+            "dependency_confusion, dependency_cve, credential_theft, or "
+            "crypto_wallet_access. Use an exact supplied file path and physical line. "
+            "For dependency_cve, package must exactly match a parsed dependency and "
+            "related must be a concrete CVE identifier. A declared version range is not "
+            "proof that a vulnerable version resolved. Ordinary API clients, deferred "
+            "runtime behavior, standard native builds, pinned registries, and security "
+            "fixtures are benign. Report only HIGH or CRITICAL grounded behavior."
+        )
     body = {
         "model": model,
         "messages": [
@@ -257,12 +338,16 @@ def _llm_request(report, files, context, track):
     endpoint = api.rstrip("/")
     if not endpoint.endswith("/v1/chat/completions"):
         endpoint += "/chat/completions" if endpoint.endswith("/v1") else "/v1/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Phylax-Provider": provider,
+        "X-Phylax-Nonce": nonce,
+    }
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     request = urllib.request.Request(
         endpoint, data=json.dumps(body, separators=(",", ":")).encode(), method="POST",
-        headers={
-            "Content-Type": "application/json", "Authorization": f"Bearer {key}",
-            "X-Phylax-Provider": provider, "X-Phylax-Nonce": nonce,
-        },
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(
@@ -287,13 +372,149 @@ def _llm_request(report, files, context, track):
     return result, metadata
 
 
+def _llm_file_index(files):
+    indexed = {}
+    for item in files:
+        path, text, _base = _llm_parts(item)
+        if path:
+            indexed[path] = max(1, len(text.splitlines()))
+    return indexed
+
+
+def _llm_repository_candidates(grounded, result, file_index, evidence):
+
+    accepted = []
+    if result["risk_score"] < 75 or result["confidence"] < 0.78:
+        return accepted
+    supply = evidence.get("supply_chain")
+    supply = supply if isinstance(supply, dict) else {}
+    dependency_names = {
+        str(item.get("name") or "").strip().lower()
+        for item in (supply.get("dependencies") or [])
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+    for finding, raw in grounded:
+        kind = str(raw.get("kind") or "").strip().lower()
+        severity = finding["severity"]
+        path, line = finding["file"], finding["line"]
+        if severity not in ("HIGH", "CRITICAL"):
+            continue
+        if kind in ("vulnerability", "secret"):
+            if not path or not (1 <= line <= file_index.get(path, 0)):
+                continue
+            if kind == "vulnerability":
+                cwe = str(raw.get("cwe") or "").strip().upper()
+                descriptive = len(re.findall(r"[a-z0-9]+", (
+                    finding["title"] + " " + finding["description"]
+                ).lower())) >= 6
+                if not re.fullmatch(r"CWE-\d{1,5}", cwe) and not descriptive:
+                    continue
+            elif not str(raw.get("secret_type") or "").strip():
+                continue
+        elif kind == "supply_chain":
+            category = str(raw.get("category") or "").strip().lower().replace(" ", "_")
+            if category not in _LLM_REPOSITORY_SUPPLY_TYPES:
+                continue
+            supply_type = _LLM_REPOSITORY_SUPPLY_TYPES[category]
+            if supply_type == "install_script":
+                if not path or path not in file_index:
+                    continue
+            else:
+                package = str(raw.get("package") or "").strip().lower()
+                if not package or package not in dependency_names:
+                    continue
+                related = str(raw.get("related") or "").strip()
+                if supply_type == "typosquat" and not related:
+                    continue
+                if supply_type == "vulnerable_dependency" and not re.fullmatch(
+                    r"(?i)CVE-\d{4}-\d{4,7}", related
+                ):
+                    continue
+        else:
+            continue
+        accepted.append((finding, raw))
+    return accepted
+
+
+def _llm_skill_candidates(grounded, result, file_index):
+
+    if result["risk_score"] < 70 or result["confidence"] < 0.82:
+        return []
+    accepted = []
+    for finding, raw in grounded:
+        category = str(raw.get("category") or "").strip().lower().replace("-", "_")
+        canonical = _LLM_SKILL_CATEGORIES.get(category)
+        path, line = finding["file"], finding["line"]
+        if (
+            canonical is None
+            or finding["severity"] not in ("HIGH", "CRITICAL")
+            or not path
+            or not (1 <= line <= file_index.get(path, 0))
+        ):
+            continue
+        finding["category"] = canonical
+        accepted.append((finding, raw))
+    return accepted
+
+
+def _llm_package_candidates(grounded, result, file_index, evidence):
+
+    if result["risk_score"] < 75 or result["confidence"] < 0.82:
+        return []
+    supply = evidence.get("supply_chain")
+    supply = supply if isinstance(supply, dict) else {}
+    dependency_names = {
+        str(item.get("name") or "").strip().lower()
+        for item in (supply.get("dependencies") or [])
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+    own_name = str(supply.get("package_name") or "").strip().lower()
+    accepted = []
+    for finding, raw in grounded:
+        category = str(raw.get("category") or "").strip().lower().replace("-", "_")
+        canonical = _LLM_PACKAGE_CATEGORIES.get(category)
+        path, line = finding["file"], finding["line"]
+        if (
+            canonical is None
+            or finding["severity"] not in ("HIGH", "CRITICAL")
+            or not path
+            or not (1 <= line <= file_index.get(path, 0))
+        ):
+            continue
+        package = str(raw.get("package") or "").strip().lower()
+        related = str(raw.get("related") or "").strip()
+        if canonical == "dependency_cve":
+            if (
+                package not in dependency_names
+                or not re.fullmatch(r"(?i)CVE-\d{4}-\d{4,7}", related)
+            ):
+                continue
+        elif canonical == "typosquat":
+            if (
+                not package
+                or package not in dependency_names | ({own_name} if own_name else set())
+                or not related
+                or related.lower() == package
+            ):
+                continue
+        elif canonical == "dependency_confusion" and (
+            not package
+            or package not in dependency_names | ({own_name} if own_name else set())
+        ):
+            continue
+        finding["category"] = canonical
+        accepted.append((finding, raw))
+    return accepted
+
+
 def _llm_enhance(report, files, context, track):
     result, metadata = _llm_request(report, files, context, track)
     evidence = report.setdefault("evidence", {})
     evidence["llm_analysis"] = metadata
     if result is None:
         return report
-    paths = {_llm_parts(item)[0] for item in files}
+    file_index = _llm_file_index(files)
+    paths = set(file_index)
     grounded = []
     for raw in result.get("findings", [])[:6]:
         if not isinstance(raw, dict):
@@ -310,19 +531,58 @@ def _llm_enhance(report, files, context, track):
         if raw.get("cwe"):
             finding["cwe"] = str(raw["cwe"])[:32]
         grounded.append((finding, raw))
+    if track == "repositories":
+        mergeable = _llm_repository_candidates(grounded, result, file_index, evidence)
+    elif track == "skills":
+        mergeable = _llm_skill_candidates(grounded, result, file_index)
+    elif track == "packages":
+        mergeable = _llm_package_candidates(grounded, result, file_index, evidence)
+    else:
+        mergeable = grounded
+    metadata["findings_received"] = len(result.get("findings", []))
+    metadata["findings_accepted"] = len(mergeable)
     current = report.setdefault("findings", [])
-    seen = {(str(item.get("file") or ""), str(item.get("title") or "").lower())
-            for item in current if isinstance(item, dict)}
-    for finding, _raw in grounded[:4]:
-        key = finding["file"], finding["title"].lower()
-        if key not in seen:
-            current.append(finding)
+    if track in ("skills", "packages"):
+        seen = {
+            (
+                str(item.get("category") or "").strip().lower(),
+                str(item.get("evidence_ref") or item.get("file") or "")
+                .replace("\\", "/").lstrip("./").lower(),
+            )
+            for item in current if isinstance(item, dict)
+        }
+        for finding, _raw in mergeable[:4]:
+            key = finding["category"], finding["file"].replace("\\", "/").lstrip("./").lower()
+            if key in seen:
+                continue
+            plane = (
+                "context"
+                if track == "skills"
+                and finding["category"] != "transitive_poisoning"
+                else "action"
+            )
+            current.append({
+                **finding,
+                "plane": plane,
+                "evidence_ref": finding["file"],
+                "location": f"line {finding['line']}",
+            })
             seen.add(key)
+    else:
+        seen = {(str(item.get("file") or ""), str(item.get("title") or "").lower())
+                for item in current if isinstance(item, dict)}
+        for finding, _raw in mergeable[:4]:
+            key = finding["file"], finding["title"].lower()
+            if key not in seen:
+                current.append(finding)
+                seen.add(key)
     old = report.get("verdict") or {}
+    if track in ("repositories", "skills", "packages") and not mergeable:
+        return report
     static_score, llm_score = int(old.get("risk_score", 50)), result["risk_score"]
     score = round(0.45 * static_score + 0.55 * llm_score)
     score = max(score, 75 if static_score >= 90 else 65 if static_score >= 80 else 0)
-    if llm_score >= 80 and any(f["severity"] in ("HIGH", "CRITICAL") for f, _ in grounded):
+    if llm_score >= 80 and any(f["severity"] in ("HIGH", "CRITICAL") for f, _ in mergeable):
         score = max(score, 80)
     if llm_score <= 20 and static_score <= 85:
         score = min(score, 25)
@@ -332,15 +592,30 @@ def _llm_enhance(report, files, context, track):
         "confidence": round((float(old.get("confidence", 0.5)) + result["confidence"]) / 2, 3),
     }
     if track == "repositories":
-        vulnerabilities, secrets = evidence.setdefault("vulnerabilities", []), evidence.setdefault("secrets", [])
+        vulnerabilities = evidence.setdefault("vulnerabilities", [])
+        secrets = evidence.setdefault("secrets", [])
+        supply = evidence.setdefault("supply_chain", {})
+        if not isinstance(supply, dict):
+            supply = {}
+            evidence["supply_chain"] = supply
+        dependencies = supply.setdefault("dependencies", [])
+        typosquat = supply.setdefault("typosquat", [])
+        confusion = supply.setdefault("dependency_confusion", [])
+        install_scripts = supply.setdefault("install_scripts", [])
+        dependency_by_name = {
+            str(dependency.get("name") or "").strip().lower(): dependency
+            for dependency in dependencies if isinstance(dependency, dict)
+            and str(dependency.get("name") or "").strip()
+        }
         vkeys = {(str(v.get("file") or ""), int(v.get("line") or 0), str(v.get("cwe") or ""))
                  for v in vulnerabilities if isinstance(v, dict)}
         skeys = {(str(s.get("file") or ""), int(s.get("line") or 0), str(s.get("type") or ""))
                  for s in secrets if isinstance(s, dict)}
-        for finding, raw in grounded:
-            line = finding["line"] or 1
+        for finding, raw in mergeable:
+            line = finding["line"]
             if raw.get("kind") == "vulnerability" and finding["file"]:
-                cwe, key = str(raw.get("cwe") or "CWE-20")[:32], (finding["file"], line, str(raw.get("cwe") or "CWE-20")[:32])
+                cwe = str(raw.get("cwe") or "").strip().upper()[:32]
+                key = finding["file"], line, cwe
                 if key not in vkeys:
                     vulnerabilities.append({
                         "file": finding["file"], "line": line, "cwe": cwe,
@@ -350,12 +625,111 @@ def _llm_enhance(report, files, context, track):
                     })
                     vkeys.add(key)
             elif raw.get("kind") == "secret" and finding["file"]:
-                secret_type = str(raw.get("secret_type") or "credential")[:80]
+                secret_type = str(raw.get("secret_type") or "").strip().lower()[:80]
                 key = finding["file"], line, secret_type
                 if key not in skeys:
                     secrets.append({"file": finding["file"], "line": line, "type": secret_type,
                                     "redacted": True, "source": "llm"})
                     skeys.add(key)
+            elif raw.get("kind") == "supply_chain":
+                category = str(raw.get("category") or "").strip().lower().replace(" ", "_")
+                supply_type = _LLM_REPOSITORY_SUPPLY_TYPES.get(category)
+                package = str(raw.get("package") or "").strip()
+                dependency = dependency_by_name.get(package.lower())
+                if supply_type == "install_script":
+                    if not any(
+                        isinstance(item, dict) and item.get("file") == finding["file"]
+                        for item in install_scripts
+                    ):
+                        install_scripts.append({
+                            "file": finding["file"], "hook": "install",
+                            "detail": finding["description"] or finding["title"],
+                            "source": "llm",
+                        })
+                elif dependency is not None:
+                    exact_name = str(dependency.get("name") or "")
+                    if supply_type == "typosquat":
+                        related = str(raw.get("related") or "").strip()
+                        if related and related.lower() != exact_name.lower() and not any(
+                            isinstance(item, dict)
+                            and str(item.get("name") or "").lower() == exact_name.lower()
+                            for item in typosquat
+                        ):
+                            typosquat.append({
+                                "name": exact_name, "of": related,
+                                "ecosystem": dependency.get("ecosystem") or "",
+                                "source": "llm",
+                            })
+                    elif supply_type == "dependency_confusion" and not any(
+                        isinstance(item, dict)
+                        and str(item.get("name") or "").lower() == exact_name.lower()
+                        for item in confusion
+                    ):
+                        confusion.append({
+                            "name": exact_name,
+                            "reason": finding["description"] or finding["title"],
+                            "source": "llm",
+                        })
+                    elif supply_type == "vulnerable_dependency":
+                        related = str(raw.get("related") or "").strip().upper()
+                        if re.fullmatch(r"CVE-\d{4}-\d{4,7}", related):
+                            known = dependency.get("cve")
+                            if not isinstance(known, list):
+                                known = [known] if known else []
+                            if related not in known:
+                                known.append(related)
+                            dependency["cve"] = known
+    elif track == "packages":
+        lifecycle = evidence.setdefault("lifecycle", {})
+        supply = evidence.setdefault("supply_chain", {})
+        if not isinstance(lifecycle, dict):
+            lifecycle = {}
+            evidence["lifecycle"] = lifecycle
+        if not isinstance(supply, dict):
+            supply = {}
+            evidence["supply_chain"] = supply
+        dependencies = supply.setdefault("dependencies", [])
+        dependency_by_name = {
+            str(item.get("name") or "").strip().lower(): item
+            for item in dependencies
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        }
+        for finding, raw in mergeable:
+            category = finding["category"]
+            if category in ("install_hook_exec", "import_side_effect"):
+                phase_name = (
+                    "install_time"
+                    if category == "install_hook_exec" else "import_time"
+                )
+                phase = lifecycle.setdefault(phase_name, {})
+                if isinstance(phase, dict):
+                    phase["hook_executed"] = True
+                    effects = phase.setdefault("side_effects", [])
+                    marker = f"llm:{finding['file']}:{finding['line']}"
+                    if isinstance(effects, list) and marker not in effects:
+                        effects.append(marker)
+            elif category == "dependency_cve":
+                package = str(raw.get("package") or "").strip().lower()
+                dependency = dependency_by_name.get(package)
+                cve = str(raw.get("related") or "").strip().upper()
+                if dependency is not None and re.fullmatch(
+                    r"CVE-\d{4}-\d{4,7}", cve
+                ):
+                    known = dependency.get("cve")
+                    if not isinstance(known, list):
+                        known = [known] if known else []
+                    if cve not in known:
+                        known.append(cve)
+                    dependency["cve"] = known
+            elif category == "typosquat":
+                supply["typosquat"] = {
+                    "suspected": True,
+                    "of": str(raw.get("related") or "").strip(),
+                    "name": str(raw.get("package") or "").strip(),
+                    "source": "llm",
+                }
+            elif category == "dependency_confusion":
+                supply["dependency_confusion"] = True
     return report
 
 _MAX_FILE_BYTES = 512_000
@@ -2091,7 +2465,232 @@ def _python_compile_execute_vulnerabilities(
         )]
     return []
 
-def _python_repository_vulnerabilities(f: _File) -> list[dict]:
+def _python_shell_wrapper_names(tree) -> set[str]:
+
+
+
+
+
+
+    dangerous_classes: set[str] = set()
+    for cls in (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef)):
+        init = next(
+            (
+                node for node in cls.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == "__init__"
+            ),
+            None,
+        )
+        if init is None:
+            continue
+        parameters = {
+            arg.arg for arg in (
+                list(init.args.posonlyargs) + list(init.args.args)
+                + list(init.args.kwonlyargs)
+            )
+            if arg.arg not in ("self", "cls")
+        }
+        parameter_attrs: set[str] = set()
+        for node in ast.walk(init):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                continue
+            value = node.value
+            targets = (
+                list(node.targets) if isinstance(node, ast.Assign)
+                else [node.target]
+            )
+            if not isinstance(value, ast.Name) or value.id not in parameters:
+                continue
+            for target in targets:
+                if (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                ):
+                    parameter_attrs.add(target.attr)
+        if not parameter_attrs:
+            continue
+        for method in (
+            node for node in cls.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ):
+            for call_node in (
+                node for node in ast.walk(method) if isinstance(node, ast.Call)
+            ):
+                call = _python_call_path(call_node.func)
+                shell_true = any(
+                    kw.arg == "shell"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is True
+                    for kw in call_node.keywords
+                )
+                if (
+                    call not in (
+                        "os.system", "os.popen", "subprocess.getoutput",
+                        "subprocess.getstatusoutput", *_PY_PROCESS_CALLS,
+                    )
+                    or call in _PY_PROCESS_CALLS and not shell_true
+                    or not call_node.args
+                ):
+                    continue
+                if any(
+                    isinstance(child, ast.Attribute)
+                    and isinstance(child.value, ast.Name)
+                    and child.value.id == "self"
+                    and child.attr in parameter_attrs
+                    for child in ast.walk(call_node.args[0])
+                ):
+                    dangerous_classes.add(cls.name)
+                    break
+            if cls.name in dangerous_classes:
+                break
+
+    functions = [
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    dangerous_functions: set[str] = set()
+    for _ in range(6):
+        before = len(dangerous_functions)
+        for fn in functions:
+            parameters = {
+                arg.arg for arg in (
+                    list(fn.args.posonlyargs) + list(fn.args.args)
+                    + list(fn.args.kwonlyargs)
+                )
+                if arg.arg not in ("self", "cls")
+            }
+            if not parameters:
+                continue
+            nodes = _function_body_nodes(fn)
+            tainted = set(parameters)
+            guarded = _repository_python_guards(fn, parameters)
+            dangerous_instances: set[str] = set()
+            for _pass in range(5):
+                previous_taint = len(tainted)
+                previous_instances = len(dangerous_instances)
+                for node in nodes:
+                    value = None
+                    targets: list = []
+                    if isinstance(node, ast.Assign):
+                        value, targets = node.value, list(node.targets)
+                    elif isinstance(node, ast.AnnAssign):
+                        value, targets = node.value, [node.target]
+                    elif isinstance(node, ast.NamedExpr):
+                        value, targets = node.value, [node.target]
+                    elif isinstance(node, ast.AugAssign):
+                        value, targets = node.value, [node.target]
+                    if value is None:
+                        continue
+                    if _repository_expr_uses_taint(value, tainted, guarded):
+                        for target in targets:
+                            tainted |= _assigned_names(target)
+                    if (
+                        isinstance(value, ast.Call)
+                        and _python_call_path(value.func) in dangerous_classes
+                        and any(
+                            _repository_expr_uses_taint(arg, tainted, guarded)
+                            for arg in value.args
+                        )
+                    ):
+                        for target in targets:
+                            dangerous_instances |= _assigned_names(target)
+                if (
+                    len(tainted) == previous_taint
+                    and len(dangerous_instances) == previous_instances
+                ):
+                    break
+
+            for node in nodes:
+                if not isinstance(node, ast.Call):
+                    continue
+                call = _python_call_path(node.func)
+                first = node.args[0] if node.args else None
+                first_tainted = _repository_expr_uses_taint(
+                    first, tainted, guarded
+                )
+                shell_true = any(
+                    kw.arg == "shell"
+                    and isinstance(kw.value, ast.Constant)
+                    and kw.value.value is True
+                    for kw in node.keywords
+                )
+                direct_shell = (
+                    call in (
+                        "os.system", "os.popen", "subprocess.getoutput",
+                        "subprocess.getstatusoutput",
+                    )
+                    or call in _PY_PROCESS_CALLS and shell_true
+                )
+                wrapped_shell = (
+                    call.rsplit(".", 1)[-1] in dangerous_functions
+                    and first_tainted
+                )
+                instance_shell = (
+                    isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id in dangerous_instances
+                    and node.func.attr in ("execute", "run", "start", "invoke")
+                )
+                if direct_shell and first_tainted or wrapped_shell or instance_shell:
+                    dangerous_functions.add(fn.name)
+                    break
+        if len(dangerous_functions) == before:
+            break
+    return dangerous_functions
+
+def _python_module_name(rel: str) -> str:
+    path = rel.replace("\\", "/")
+    if not path.endswith(".py"):
+        return ""
+    module = path[:-3].strip("/").replace("/", ".")
+    if module.endswith(".__init__"):
+        module = module[:-9]
+    return module
+
+def _python_imported_shell_wrappers(
+    f: _File, module_wrappers: dict[str, set[str]]
+) -> set[str]:
+
+    try:
+        tree = ast.parse(f.text)
+    except (SyntaxError, ValueError):
+        return set()
+    current = _python_module_name(f.rel)
+    package = current.rsplit(".", 1)[0] if "." in current else ""
+    imported: set[str] = set()
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                wrappers = module_wrappers.get(alias.name, set())
+                prefix = alias.asname or alias.name
+                imported |= {f"{prefix}.{name}" for name in wrappers}
+        elif isinstance(node, ast.ImportFrom):
+            module = str(node.module or "")
+            if node.level:
+                parts = package.split(".") if package else []
+                keep = max(0, len(parts) - (node.level - 1))
+                prefix = ".".join(parts[:keep])
+                module = ".".join(part for part in (prefix, module) if part)
+            wrappers = module_wrappers.get(module, set())
+            for alias in node.names:
+                if alias.name in wrappers:
+                    imported.add(alias.asname or alias.name)
+                elif not node.module:
+                    submodule = ".".join(
+                        part for part in (module, alias.name) if part
+                    )
+                    for name in module_wrappers.get(submodule, set()):
+                        imported.add(
+                            f"{alias.asname or alias.name}.{name}"
+                        )
+    return imported
+
+def _python_repository_vulnerabilities(
+    f: _File, imported_shell_wrappers: set[str] | None = None
+) -> list[dict]:
 
 
 
@@ -2105,6 +2704,10 @@ def _python_repository_vulnerabilities(f: _File) -> list[dict]:
         return []
 
     out: list[dict] = []
+    shell_wrappers = (
+        _python_shell_wrapper_names(tree)
+        | set(imported_shell_wrappers or ())
+    )
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
@@ -2140,6 +2743,8 @@ def _python_repository_vulnerabilities(f: _File) -> list[dict]:
                 elif isinstance(child, ast.AnnAssign):
                     value, targets = child.value, [child.target]
                 elif isinstance(child, ast.NamedExpr):
+                    value, targets = child.value, [child.target]
+                elif isinstance(child, ast.AugAssign):
                     value, targets = child.value, [child.target]
                 if value is not None and _repository_expr_uses_taint(value, tainted, guarded):
                     for target in targets:
@@ -2190,6 +2795,16 @@ def _python_repository_vulnerabilities(f: _File) -> list[dict]:
                     "OS command injection from request-derived command",
                     "HIGH",
                     "Pass a fixed executable and argument list; validate values against an allow-list.",
+                ))
+            elif (
+                call in shell_wrappers
+                and first_tainted
+            ):
+                out.append(_repository_vulnerability(
+                    f, line, "CWE-78",
+                    "Request-derived command reaches a shell execution wrapper",
+                    "HIGH",
+                    "Pass a fixed executable and argument vector through the helper; remove shell=True.",
                 ))
             elif (
                 call in (
@@ -3613,6 +4228,20 @@ def _repository_install_scripts(files: list[_File]) -> list[dict]:
 def _analyse_repositories(files: list[_File]) -> dict:
     vulnerabilities: list[dict] = []
     secrets: list[dict] = []
+    module_shell_wrappers: dict[str, set[str]] = {}
+    for source in files:
+        if source.suffix != ".py":
+            continue
+        module = _python_module_name(source.rel)
+        if not module:
+            continue
+        try:
+            tree = ast.parse(source.text)
+        except (SyntaxError, ValueError):
+            continue
+        wrappers = _python_shell_wrapper_names(tree)
+        if wrappers:
+            module_shell_wrappers[module] = wrappers
 
     for f in files:
 
@@ -3704,7 +4333,12 @@ def _analyse_repositories(files: list[_File]) -> dict:
                 if len(accepted_lines) >= 8:
                     break
         if f.suffix == ".py" and not in_test:
-            for vuln in _python_repository_vulnerabilities(f):
+            imported_shell_wrappers = _python_imported_shell_wrappers(
+                f, module_shell_wrappers
+            )
+            for vuln in _python_repository_vulnerabilities(
+                f, imported_shell_wrappers
+            ):
 
 
 

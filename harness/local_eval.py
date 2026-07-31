@@ -127,7 +127,9 @@ def load_corpus(corpus_dir: Path, track: str, work: Path) -> list[dict]:
                     "dir": _materialise(artifact, staged),
                     "label": label,
                     "expected_findings": expected,
-                    "ground_truth": ground_truth(track, expected) if expected else None,
+                    # The current repository scorer intentionally receives the
+                    # direct shape even for a clean vulnerabilities=[] label.
+                    "ground_truth": ground_truth(track, expected),
                 }
             )
     return items

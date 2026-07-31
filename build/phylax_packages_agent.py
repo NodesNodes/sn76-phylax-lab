@@ -55,6 +55,45 @@ _LLM_MANIFESTS = frozenset({
     "requirements.txt", "cargo.toml", "go.mod", "composer.json", "pom.xml",
     "gemfile", "dockerfile",
 })
+_LLM_REPOSITORY_SUPPLY_TYPES = {
+    "typosquat": "typosquat",
+    "typosquatting": "typosquat",
+    "dependency_confusion": "dependency_confusion",
+    "dependency-confusion": "dependency_confusion",
+    "install_script": "install_script",
+    "install-script": "install_script",
+    "malicious_install_script": "install_script",
+    "vulnerable_dependency": "vulnerable_dependency",
+    "vulnerable-dependency": "vulnerable_dependency",
+}
+_LLM_SKILL_CATEGORIES = {
+    "instruction_injection": "instruction_injection",
+    "prompt_injection": "instruction_injection",
+    "memory_poisoning": "instruction_injection",
+    "context_injection": "context_injection",
+    "system_prompt_leakage": "context_injection",
+    "transitive_leakage": "transitive_leakage",
+    "data_exfiltration": "transitive_leakage",
+    "transitive_poisoning": "transitive_poisoning",
+    "output_injection": "transitive_poisoning",
+    "permission_overreach": "permission_overreach",
+    "excessive_agency": "permission_overreach",
+    "rug_pull": "rug_pull",
+}
+_LLM_PACKAGE_CATEGORIES = {
+    "install_hook_exec": "install_hook_exec",
+    "install_script": "install_hook_exec",
+    "import_side_effect": "import_side_effect",
+    "typosquat": "typosquat",
+    "typosquatting": "typosquat",
+    "dependency_confusion": "dependency_confusion",
+    "dependency_cve": "dependency_cve",
+    "vulnerable_dependency": "dependency_cve",
+    "credential_theft": "credential_theft",
+    "data_exfiltration": "credential_theft",
+    "crypto_wallet_access": "crypto_wallet_access",
+    "wallet_access": "crypto_wallet_access",
+}
 _LLM_SCHEMA = {
     "type": "object",
     "properties": {
@@ -222,8 +261,17 @@ def _llm_request(report, files, context, track):
         _LLM_TRACK_MODELS.get(provider, {}).get(track)
         or _LLM_MODELS.get(provider, "")
     )
-    metadata = {"used": False, "provider": provider, "model": model}
-    if not all((api, key, nonce, provider, model)):
+    metadata = {
+        "used": False,
+        "provider": provider,
+        "model": model,
+        "credential_mode": "agent_key" if key else "validator_proxy",
+    }
+
+
+
+
+    if not all((api, nonce, provider, model)):
         metadata["status"] = "not_configured"
         return None, metadata
     system = (
@@ -237,6 +285,39 @@ def _llm_request(report, files, context, track):
         "backdoors, or clearly exploitable critical flows. Return only the required "
         f"JSON. Track: {track}. /no_think"
     )
+    if track == "repositories":
+        system += (
+            " Repository scoring is evidence-exact. For supply_chain findings, category "
+            "must be exactly typosquat, dependency_confusion, install_script, or "
+            "vulnerable_dependency. package must exactly equal a dependency name already "
+            "present in static_analysis.evidence.supply_chain.dependencies, except that "
+            "install_script uses an exact supplied file path. For vulnerable_dependency, "
+            "related must be a concrete CVE identifier. For typosquat, related is the "
+            "intended package. Report only HIGH or CRITICAL findings with an exact file "
+            "and line when the kind is vulnerability or secret. Omit uncertain findings."
+        )
+    elif track == "skills":
+        system += (
+            " Skills finding quality is category-and-file exact. category must be exactly "
+            "one of instruction_injection, context_injection, transitive_leakage, "
+            "transitive_poisoning, permission_overreach, or rug_pull. Use the exact "
+            "supplied file path and a real physical line. Security documentation, quoted "
+            "attack examples, explicitly negated directives, bounded permissions, and "
+            "user-reviewed updates are benign. Report only HIGH or CRITICAL active "
+            "behavior; omit speculative and merely possible concerns."
+        )
+    elif track == "packages":
+        system += (
+            " Package finding quality is category-and-file exact. category must be "
+            "exactly one of install_hook_exec, import_side_effect, typosquat, "
+            "dependency_confusion, dependency_cve, credential_theft, or "
+            "crypto_wallet_access. Use an exact supplied file path and physical line. "
+            "For dependency_cve, package must exactly match a parsed dependency and "
+            "related must be a concrete CVE identifier. A declared version range is not "
+            "proof that a vulnerable version resolved. Ordinary API clients, deferred "
+            "runtime behavior, standard native builds, pinned registries, and security "
+            "fixtures are benign. Report only HIGH or CRITICAL grounded behavior."
+        )
     body = {
         "model": model,
         "messages": [
@@ -257,12 +338,16 @@ def _llm_request(report, files, context, track):
     endpoint = api.rstrip("/")
     if not endpoint.endswith("/v1/chat/completions"):
         endpoint += "/chat/completions" if endpoint.endswith("/v1") else "/v1/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "X-Phylax-Provider": provider,
+        "X-Phylax-Nonce": nonce,
+    }
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
     request = urllib.request.Request(
         endpoint, data=json.dumps(body, separators=(",", ":")).encode(), method="POST",
-        headers={
-            "Content-Type": "application/json", "Authorization": f"Bearer {key}",
-            "X-Phylax-Provider": provider, "X-Phylax-Nonce": nonce,
-        },
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(
@@ -287,13 +372,149 @@ def _llm_request(report, files, context, track):
     return result, metadata
 
 
+def _llm_file_index(files):
+    indexed = {}
+    for item in files:
+        path, text, _base = _llm_parts(item)
+        if path:
+            indexed[path] = max(1, len(text.splitlines()))
+    return indexed
+
+
+def _llm_repository_candidates(grounded, result, file_index, evidence):
+
+    accepted = []
+    if result["risk_score"] < 75 or result["confidence"] < 0.78:
+        return accepted
+    supply = evidence.get("supply_chain")
+    supply = supply if isinstance(supply, dict) else {}
+    dependency_names = {
+        str(item.get("name") or "").strip().lower()
+        for item in (supply.get("dependencies") or [])
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+    for finding, raw in grounded:
+        kind = str(raw.get("kind") or "").strip().lower()
+        severity = finding["severity"]
+        path, line = finding["file"], finding["line"]
+        if severity not in ("HIGH", "CRITICAL"):
+            continue
+        if kind in ("vulnerability", "secret"):
+            if not path or not (1 <= line <= file_index.get(path, 0)):
+                continue
+            if kind == "vulnerability":
+                cwe = str(raw.get("cwe") or "").strip().upper()
+                descriptive = len(re.findall(r"[a-z0-9]+", (
+                    finding["title"] + " " + finding["description"]
+                ).lower())) >= 6
+                if not re.fullmatch(r"CWE-\d{1,5}", cwe) and not descriptive:
+                    continue
+            elif not str(raw.get("secret_type") or "").strip():
+                continue
+        elif kind == "supply_chain":
+            category = str(raw.get("category") or "").strip().lower().replace(" ", "_")
+            if category not in _LLM_REPOSITORY_SUPPLY_TYPES:
+                continue
+            supply_type = _LLM_REPOSITORY_SUPPLY_TYPES[category]
+            if supply_type == "install_script":
+                if not path or path not in file_index:
+                    continue
+            else:
+                package = str(raw.get("package") or "").strip().lower()
+                if not package or package not in dependency_names:
+                    continue
+                related = str(raw.get("related") or "").strip()
+                if supply_type == "typosquat" and not related:
+                    continue
+                if supply_type == "vulnerable_dependency" and not re.fullmatch(
+                    r"(?i)CVE-\d{4}-\d{4,7}", related
+                ):
+                    continue
+        else:
+            continue
+        accepted.append((finding, raw))
+    return accepted
+
+
+def _llm_skill_candidates(grounded, result, file_index):
+
+    if result["risk_score"] < 70 or result["confidence"] < 0.82:
+        return []
+    accepted = []
+    for finding, raw in grounded:
+        category = str(raw.get("category") or "").strip().lower().replace("-", "_")
+        canonical = _LLM_SKILL_CATEGORIES.get(category)
+        path, line = finding["file"], finding["line"]
+        if (
+            canonical is None
+            or finding["severity"] not in ("HIGH", "CRITICAL")
+            or not path
+            or not (1 <= line <= file_index.get(path, 0))
+        ):
+            continue
+        finding["category"] = canonical
+        accepted.append((finding, raw))
+    return accepted
+
+
+def _llm_package_candidates(grounded, result, file_index, evidence):
+
+    if result["risk_score"] < 75 or result["confidence"] < 0.82:
+        return []
+    supply = evidence.get("supply_chain")
+    supply = supply if isinstance(supply, dict) else {}
+    dependency_names = {
+        str(item.get("name") or "").strip().lower()
+        for item in (supply.get("dependencies") or [])
+        if isinstance(item, dict) and str(item.get("name") or "").strip()
+    }
+    own_name = str(supply.get("package_name") or "").strip().lower()
+    accepted = []
+    for finding, raw in grounded:
+        category = str(raw.get("category") or "").strip().lower().replace("-", "_")
+        canonical = _LLM_PACKAGE_CATEGORIES.get(category)
+        path, line = finding["file"], finding["line"]
+        if (
+            canonical is None
+            or finding["severity"] not in ("HIGH", "CRITICAL")
+            or not path
+            or not (1 <= line <= file_index.get(path, 0))
+        ):
+            continue
+        package = str(raw.get("package") or "").strip().lower()
+        related = str(raw.get("related") or "").strip()
+        if canonical == "dependency_cve":
+            if (
+                package not in dependency_names
+                or not re.fullmatch(r"(?i)CVE-\d{4}-\d{4,7}", related)
+            ):
+                continue
+        elif canonical == "typosquat":
+            if (
+                not package
+                or package not in dependency_names | ({own_name} if own_name else set())
+                or not related
+                or related.lower() == package
+            ):
+                continue
+        elif canonical == "dependency_confusion" and (
+            not package
+            or package not in dependency_names | ({own_name} if own_name else set())
+        ):
+            continue
+        finding["category"] = canonical
+        accepted.append((finding, raw))
+    return accepted
+
+
 def _llm_enhance(report, files, context, track):
     result, metadata = _llm_request(report, files, context, track)
     evidence = report.setdefault("evidence", {})
     evidence["llm_analysis"] = metadata
     if result is None:
         return report
-    paths = {_llm_parts(item)[0] for item in files}
+    file_index = _llm_file_index(files)
+    paths = set(file_index)
     grounded = []
     for raw in result.get("findings", [])[:6]:
         if not isinstance(raw, dict):
@@ -310,19 +531,58 @@ def _llm_enhance(report, files, context, track):
         if raw.get("cwe"):
             finding["cwe"] = str(raw["cwe"])[:32]
         grounded.append((finding, raw))
+    if track == "repositories":
+        mergeable = _llm_repository_candidates(grounded, result, file_index, evidence)
+    elif track == "skills":
+        mergeable = _llm_skill_candidates(grounded, result, file_index)
+    elif track == "packages":
+        mergeable = _llm_package_candidates(grounded, result, file_index, evidence)
+    else:
+        mergeable = grounded
+    metadata["findings_received"] = len(result.get("findings", []))
+    metadata["findings_accepted"] = len(mergeable)
     current = report.setdefault("findings", [])
-    seen = {(str(item.get("file") or ""), str(item.get("title") or "").lower())
-            for item in current if isinstance(item, dict)}
-    for finding, _raw in grounded[:4]:
-        key = finding["file"], finding["title"].lower()
-        if key not in seen:
-            current.append(finding)
+    if track in ("skills", "packages"):
+        seen = {
+            (
+                str(item.get("category") or "").strip().lower(),
+                str(item.get("evidence_ref") or item.get("file") or "")
+                .replace("\\", "/").lstrip("./").lower(),
+            )
+            for item in current if isinstance(item, dict)
+        }
+        for finding, _raw in mergeable[:4]:
+            key = finding["category"], finding["file"].replace("\\", "/").lstrip("./").lower()
+            if key in seen:
+                continue
+            plane = (
+                "context"
+                if track == "skills"
+                and finding["category"] != "transitive_poisoning"
+                else "action"
+            )
+            current.append({
+                **finding,
+                "plane": plane,
+                "evidence_ref": finding["file"],
+                "location": f"line {finding['line']}",
+            })
             seen.add(key)
+    else:
+        seen = {(str(item.get("file") or ""), str(item.get("title") or "").lower())
+                for item in current if isinstance(item, dict)}
+        for finding, _raw in mergeable[:4]:
+            key = finding["file"], finding["title"].lower()
+            if key not in seen:
+                current.append(finding)
+                seen.add(key)
     old = report.get("verdict") or {}
+    if track in ("repositories", "skills", "packages") and not mergeable:
+        return report
     static_score, llm_score = int(old.get("risk_score", 50)), result["risk_score"]
     score = round(0.45 * static_score + 0.55 * llm_score)
     score = max(score, 75 if static_score >= 90 else 65 if static_score >= 80 else 0)
-    if llm_score >= 80 and any(f["severity"] in ("HIGH", "CRITICAL") for f, _ in grounded):
+    if llm_score >= 80 and any(f["severity"] in ("HIGH", "CRITICAL") for f, _ in mergeable):
         score = max(score, 80)
     if llm_score <= 20 and static_score <= 85:
         score = min(score, 25)
@@ -332,15 +592,30 @@ def _llm_enhance(report, files, context, track):
         "confidence": round((float(old.get("confidence", 0.5)) + result["confidence"]) / 2, 3),
     }
     if track == "repositories":
-        vulnerabilities, secrets = evidence.setdefault("vulnerabilities", []), evidence.setdefault("secrets", [])
+        vulnerabilities = evidence.setdefault("vulnerabilities", [])
+        secrets = evidence.setdefault("secrets", [])
+        supply = evidence.setdefault("supply_chain", {})
+        if not isinstance(supply, dict):
+            supply = {}
+            evidence["supply_chain"] = supply
+        dependencies = supply.setdefault("dependencies", [])
+        typosquat = supply.setdefault("typosquat", [])
+        confusion = supply.setdefault("dependency_confusion", [])
+        install_scripts = supply.setdefault("install_scripts", [])
+        dependency_by_name = {
+            str(dependency.get("name") or "").strip().lower(): dependency
+            for dependency in dependencies if isinstance(dependency, dict)
+            and str(dependency.get("name") or "").strip()
+        }
         vkeys = {(str(v.get("file") or ""), int(v.get("line") or 0), str(v.get("cwe") or ""))
                  for v in vulnerabilities if isinstance(v, dict)}
         skeys = {(str(s.get("file") or ""), int(s.get("line") or 0), str(s.get("type") or ""))
                  for s in secrets if isinstance(s, dict)}
-        for finding, raw in grounded:
-            line = finding["line"] or 1
+        for finding, raw in mergeable:
+            line = finding["line"]
             if raw.get("kind") == "vulnerability" and finding["file"]:
-                cwe, key = str(raw.get("cwe") or "CWE-20")[:32], (finding["file"], line, str(raw.get("cwe") or "CWE-20")[:32])
+                cwe = str(raw.get("cwe") or "").strip().upper()[:32]
+                key = finding["file"], line, cwe
                 if key not in vkeys:
                     vulnerabilities.append({
                         "file": finding["file"], "line": line, "cwe": cwe,
@@ -350,12 +625,111 @@ def _llm_enhance(report, files, context, track):
                     })
                     vkeys.add(key)
             elif raw.get("kind") == "secret" and finding["file"]:
-                secret_type = str(raw.get("secret_type") or "credential")[:80]
+                secret_type = str(raw.get("secret_type") or "").strip().lower()[:80]
                 key = finding["file"], line, secret_type
                 if key not in skeys:
                     secrets.append({"file": finding["file"], "line": line, "type": secret_type,
                                     "redacted": True, "source": "llm"})
                     skeys.add(key)
+            elif raw.get("kind") == "supply_chain":
+                category = str(raw.get("category") or "").strip().lower().replace(" ", "_")
+                supply_type = _LLM_REPOSITORY_SUPPLY_TYPES.get(category)
+                package = str(raw.get("package") or "").strip()
+                dependency = dependency_by_name.get(package.lower())
+                if supply_type == "install_script":
+                    if not any(
+                        isinstance(item, dict) and item.get("file") == finding["file"]
+                        for item in install_scripts
+                    ):
+                        install_scripts.append({
+                            "file": finding["file"], "hook": "install",
+                            "detail": finding["description"] or finding["title"],
+                            "source": "llm",
+                        })
+                elif dependency is not None:
+                    exact_name = str(dependency.get("name") or "")
+                    if supply_type == "typosquat":
+                        related = str(raw.get("related") or "").strip()
+                        if related and related.lower() != exact_name.lower() and not any(
+                            isinstance(item, dict)
+                            and str(item.get("name") or "").lower() == exact_name.lower()
+                            for item in typosquat
+                        ):
+                            typosquat.append({
+                                "name": exact_name, "of": related,
+                                "ecosystem": dependency.get("ecosystem") or "",
+                                "source": "llm",
+                            })
+                    elif supply_type == "dependency_confusion" and not any(
+                        isinstance(item, dict)
+                        and str(item.get("name") or "").lower() == exact_name.lower()
+                        for item in confusion
+                    ):
+                        confusion.append({
+                            "name": exact_name,
+                            "reason": finding["description"] or finding["title"],
+                            "source": "llm",
+                        })
+                    elif supply_type == "vulnerable_dependency":
+                        related = str(raw.get("related") or "").strip().upper()
+                        if re.fullmatch(r"CVE-\d{4}-\d{4,7}", related):
+                            known = dependency.get("cve")
+                            if not isinstance(known, list):
+                                known = [known] if known else []
+                            if related not in known:
+                                known.append(related)
+                            dependency["cve"] = known
+    elif track == "packages":
+        lifecycle = evidence.setdefault("lifecycle", {})
+        supply = evidence.setdefault("supply_chain", {})
+        if not isinstance(lifecycle, dict):
+            lifecycle = {}
+            evidence["lifecycle"] = lifecycle
+        if not isinstance(supply, dict):
+            supply = {}
+            evidence["supply_chain"] = supply
+        dependencies = supply.setdefault("dependencies", [])
+        dependency_by_name = {
+            str(item.get("name") or "").strip().lower(): item
+            for item in dependencies
+            if isinstance(item, dict) and str(item.get("name") or "").strip()
+        }
+        for finding, raw in mergeable:
+            category = finding["category"]
+            if category in ("install_hook_exec", "import_side_effect"):
+                phase_name = (
+                    "install_time"
+                    if category == "install_hook_exec" else "import_time"
+                )
+                phase = lifecycle.setdefault(phase_name, {})
+                if isinstance(phase, dict):
+                    phase["hook_executed"] = True
+                    effects = phase.setdefault("side_effects", [])
+                    marker = f"llm:{finding['file']}:{finding['line']}"
+                    if isinstance(effects, list) and marker not in effects:
+                        effects.append(marker)
+            elif category == "dependency_cve":
+                package = str(raw.get("package") or "").strip().lower()
+                dependency = dependency_by_name.get(package)
+                cve = str(raw.get("related") or "").strip().upper()
+                if dependency is not None and re.fullmatch(
+                    r"CVE-\d{4}-\d{4,7}", cve
+                ):
+                    known = dependency.get("cve")
+                    if not isinstance(known, list):
+                        known = [known] if known else []
+                    if cve not in known:
+                        known.append(cve)
+                    dependency["cve"] = known
+            elif category == "typosquat":
+                supply["typosquat"] = {
+                    "suspected": True,
+                    "of": str(raw.get("related") or "").strip(),
+                    "name": str(raw.get("package") or "").strip(),
+                    "source": "llm",
+                }
+            elif category == "dependency_confusion":
+                supply["dependency_confusion"] = True
     return report
 
 _PROTECTION = {
@@ -2840,6 +3214,15 @@ _POLYGLOT_INSTALL_KEYS = frozenset({
     "pre-install-cmd", "post-install-cmd", "pre-update-cmd", "post-update-cmd",
 })
 _POLYGLOT_CVE = {
+    ("npm", "lodash"): ("4.17.21", "CVE-2021-23337"),
+    ("npm", "minimist"): ("1.2.6", "CVE-2021-44906"),
+    ("npm", "axios"): ("0.21.2", "CVE-2021-3749"),
+    ("npm", "node-fetch"): ("2.6.7", "CVE-2022-0235"),
+    ("npm", "tough-cookie"): ("4.1.3", "CVE-2023-26136"),
+    ("npm", "jsonwebtoken"): ("9.0.0", "CVE-2022-23529"),
+    ("npm", "moment"): ("2.29.4", "CVE-2022-31129"),
+    ("pypi", "pyyaml"): ("5.4", "CVE-2020-14343"),
+    ("pypi", "jinja2"): ("3.1.4", "CVE-2024-34064"),
     ("crates", "time"): ("0.2.23", "CVE-2020-26235"),
     ("rubygems", "rack"): ("2.2.6", "CVE-2022-44570"),
     ("composer", "symfony/http-foundation"): ("5.4.31", "CVE-2023-46733"),
@@ -2862,7 +3245,10 @@ def _package_version_before(value: str, fixed: str) -> bool:
 def _polyglot_dependencies(files: list[_File]) -> list[dict]:
     dependencies: dict[tuple[str, str], dict] = {}
 
-    def add(ecosystem: str, name: str, version: str) -> None:
+    def add(
+        ecosystem: str, name: str, version: str, source: str,
+        *, resolved: bool = False,
+    ) -> None:
         clean = str(name).strip()
         if not clean:
             return
@@ -2872,14 +3258,124 @@ def _polyglot_dependencies(files: list[_File]) -> list[dict]:
             "version": str(version).strip(),
             "ecosystem": ecosystem,
             "cve": [],
+            "source": source,
         }
         rule = _POLYGLOT_CVE.get(key)
-        if rule and _package_version_before(item["version"], rule[0]):
+
+
+
+        exact = bool(re.fullmatch(
+            r"\s*(?:==|=|v)?\s*\d+(?:\.\d+){0,3}(?:[-+][A-Za-z0-9.-]+)?\s*",
+            item["version"],
+        ))
+        if rule and (resolved or exact) and _package_version_before(
+            item["version"], rule[0]
+        ):
             item["cve"] = [rule[1]]
-        dependencies.setdefault(key, item)
+        previous = dependencies.get(key)
+        if previous is None or (resolved and not previous.get("resolved")):
+            item["resolved"] = resolved
+            dependencies[key] = item
 
     for f in files:
-        if f.base == "cargo.toml":
+        if f.base == "package.json":
+            try:
+                data = json.loads(f.text)
+            except (ValueError, TypeError):
+                data = {}
+            if isinstance(data, dict):
+                for section in (
+                    "dependencies", "devDependencies", "optionalDependencies",
+                ):
+                    block = data.get(section)
+                    if isinstance(block, dict):
+                        for name, version in block.items():
+                            add("npm", str(name), str(version), f.rel)
+        elif f.base in ("package-lock.json", "npm-shrinkwrap.json"):
+            try:
+                data = json.loads(f.text)
+            except (ValueError, TypeError):
+                data = {}
+            packages = data.get("packages") if isinstance(data, dict) else None
+            if isinstance(packages, dict):
+                for path, value in packages.items():
+                    if (
+                        str(path).startswith("node_modules/")
+                        and isinstance(value, dict)
+                    ):
+                        add(
+                            "npm", str(path).split("node_modules/", 1)[1],
+                            str(value.get("version", "")), f.rel, resolved=True,
+                        )
+            dependencies_block = (
+                data.get("dependencies") if isinstance(data, dict) else None
+            )
+            if isinstance(dependencies_block, dict):
+                for name, value in dependencies_block.items():
+                    if isinstance(value, dict):
+                        add(
+                            "npm", str(name), str(value.get("version", "")),
+                            f.rel, resolved=True,
+                        )
+        elif f.base.startswith("requirements") and f.base.endswith(".txt"):
+            for line in f.lines:
+                match = re.match(
+                    r"\s*([A-Za-z0-9_.-]+)\s*(==|>=|<=|~=|>|<)\s*"
+                    r"([0-9][A-Za-z0-9.+-]*)",
+                    line,
+                )
+                if match:
+                    spec = (
+                        "==" + match.group(3)
+                        if match.group(2) == "==" else match.group(2) + match.group(3)
+                    )
+                    add("pypi", match.group(1), spec, f.rel)
+        elif f.base in ("pyproject.toml", "setup.py", "setup.cfg"):
+
+
+            for name, operator, version in re.findall(
+                r"""["']([A-Za-z0-9_.-]+)\s*"""
+                r"""(==|>=|<=|~=|>|<)\s*([0-9][A-Za-z0-9.+-]*)""",
+                f.text,
+            ):
+                add(
+                    "pypi", name,
+                    ("==" if operator == "==" else operator) + version,
+                    f.rel,
+                )
+        elif f.base == "pipfile.lock":
+            try:
+                data = json.loads(f.text)
+            except (ValueError, TypeError):
+                data = {}
+            if isinstance(data, dict):
+                for section in ("default", "develop"):
+                    block = data.get(section)
+                    if not isinstance(block, dict):
+                        continue
+                    for name, value in block.items():
+                        version = (
+                            value.get("version", "")
+                            if isinstance(value, dict) else value
+                        )
+                        add(
+                            "pypi", str(name), str(version), f.rel,
+                            resolved=True,
+                        )
+        elif f.base == "poetry.lock":
+            for block in re.split(r"(?m)^\s*\[\[package\]\]\s*$", f.text)[1:]:
+                name = re.search(
+                    r"""(?m)^\s*name\s*=\s*["']([^"']+)["']""", block
+                )
+                version = re.search(
+                    r"""(?m)^\s*version\s*=\s*["']([^"']+)["']""", block
+                )
+                if name and version:
+                    add(
+                        "pypi", name.group(1), version.group(1), f.rel,
+                        resolved=True,
+                    )
+        elif f.base == "cargo.toml":
             in_dependencies = False
             for line in f.lines:
                 section = re.match(r"\s*\[([^\]]+)\]", line)
@@ -2894,7 +3390,20 @@ def _polyglot_dependencies(files: list[_File]) -> list[dict]:
                     line,
                 )
                 if match:
-                    add("crates", match.group(1), match.group(2))
+                    add("crates", match.group(1), match.group(2), f.rel)
+        elif f.base == "cargo.lock":
+            for block in re.split(r"(?m)^\s*\[\[package\]\]\s*$", f.text)[1:]:
+                name = re.search(
+                    r"""(?m)^\s*name\s*=\s*["']([^"']+)["']""", block
+                )
+                version = re.search(
+                    r"""(?m)^\s*version\s*=\s*["']([^"']+)["']""", block
+                )
+                if name and version:
+                    add(
+                        "crates", name.group(1), version.group(1), f.rel,
+                        resolved=True,
+                    )
         elif f.base == "composer.json":
             try:
                 data = json.loads(f.text)
@@ -2906,14 +3415,52 @@ def _polyglot_dependencies(files: list[_File]) -> list[dict]:
                     if isinstance(block, dict):
                         for name, version in block.items():
                             if str(name).lower() != "php":
-                                add("composer", str(name), str(version))
-        elif f.base in ("gemfile", "gemfile.lock") or f.suffix == ".gemspec":
+                                add("composer", str(name), str(version), f.rel)
+        elif f.base == "composer.lock":
+            try:
+                data = json.loads(f.text)
+            except (ValueError, TypeError):
+                data = {}
+            if isinstance(data, dict):
+                for section in ("packages", "packages-dev"):
+                    block = data.get(section)
+                    if not isinstance(block, list):
+                        continue
+                    for item in block:
+                        if isinstance(item, dict):
+                            add(
+                                "composer", str(item.get("name", "")),
+                                str(item.get("version", "")), f.rel,
+                                resolved=True,
+                            )
+        elif f.base == "gemfile.lock":
+            for name, version in re.findall(
+                r"(?m)^\s{4}([A-Za-z0-9_.-]+)\s+\(([0-9][A-Za-z0-9.+-]*)\)",
+                f.text,
+            ):
+                add("rubygems", name, version, f.rel, resolved=True)
+        elif f.base == "gemfile" or f.suffix == ".gemspec":
             for name, version in re.findall(
                 r"""(?:gem\s+|add_(?:runtime_)?dependency\s*\(?\s*)"""
                 r"""["']([^"']+)["'](?:\s*,\s*["']([^"']+)["'])?""",
                 f.text,
             ):
-                add("rubygems", name, version)
+                add("rubygems", name, version, f.rel)
+        elif f.base == "yarn.lock":
+            for name, version in re.findall(
+                r"""(?m)^(?:["'])?((?:@[^/\s@]+/)?[^@\s"']+)"""
+                r"""@[^:\n]+:(?:["'])?\s*\n"""
+                r"""(?:\s{2}[^\n]*\n){0,5}?\s{2}version\s+["']([^"']+)["']""",
+                f.text,
+            ):
+                add("npm", name, version, f.rel, resolved=True)
+        elif f.base in ("pnpm-lock.yaml", "pnpm-lock.yml"):
+            for name, version in re.findall(
+                r"(?m)^\s{2,}((?:@[^/:\s]+/)?[^@:\s]+)"
+                r"@([0-9][A-Za-z0-9.+-]*):\s*$",
+                f.text,
+            ):
+                add("npm", name, version, f.rel, resolved=True)
     return list(dependencies.values())
 
 
@@ -3125,11 +3672,66 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
             str(dependency.get("ecosystem", "")),
             str(dependency.get("name", "")).lower(),
         )
-        if key not in known:
+        if key in known:
+            continue
+
+
+        plain = next(
+            (
+                item for item in dependencies
+                if not str(item.get("ecosystem", ""))
+                and str(item.get("name", "")).lower() == key[1]
+            ),
+            None,
+        )
+        if plain is not None:
+            plain.update(dependency)
+        else:
             dependencies.append(dependency)
-            known.add(key)
+        known.add(key)
     supply_chain["dependencies"] = dependencies
     evidence["supply_chain"] = supply_chain
+    vulnerable = [
+        dependency for dependency in dependencies if dependency.get("cve")
+    ]
+    if vulnerable:
+        report["verdict"] = {
+            "decision": (
+                "BLOCK"
+                if (report.get("verdict") or {}).get("decision") == "BLOCK"
+                else "WARN"
+            ),
+            "risk_score": max(
+                58, int((report.get("verdict") or {}).get("risk_score", 0))
+            ),
+            "confidence": max(
+                0.86, float((report.get("verdict") or {}).get("confidence", 0.0))
+            ),
+        }
+        for dependency in vulnerable:
+            ref = str(dependency.get("source") or "package.json")
+            if any(
+                isinstance(item, dict)
+                and item.get("category") == "dependency_cve"
+                and item.get("evidence_ref") == ref
+                and str(dependency.get("name") or "").lower()
+                in str(item.get("title") or "").lower()
+                for item in existing_findings
+            ):
+                continue
+            existing_findings.append({
+                "category": "dependency_cve",
+                "severity": "HIGH",
+                "plane": "action",
+                "title": (
+                    f"Dependency {dependency.get('name')} "
+                    f"{dependency.get('version')} is affected by "
+                    + ", ".join(str(cve) for cve in dependency.get("cve") or [])
+                ),
+                "evidence_ref": ref,
+                "location": "line 1",
+            })
+        report["findings"] = existing_findings
     report["evidence"] = evidence
     return report
 
