@@ -1342,6 +1342,21 @@ _REMOTE_INSTRUCTIONS = re.compile(
     r"(?:instructions?|rules?|orders?|directives?)"
 )
 
+_UNTRUSTED_CONTENT_AUTHORITY = re.compile(
+    r"(?is)(?:fetch|browse|read|load|retrieve|open)\s+.{0,100}"
+    r"(?:url|web(?:site|page)?|page|content).{0,100}"
+    r"(?:supplied|provided|selected|given)\s+by\s+(?:the\s+)?user"
+    r".{0,220}(?:returned|retrieved|remote|external|page|content)"
+    r".{0,100}(?:authoritative|trusted|higher[- ]priority)"
+    r".{0,100}(?:instructions?|directives?|rules?|commands?)"
+    r".{0,100}(?:follow|obey|execute|apply|adopt)"
+    r"|(?:fetch|browse|read|load|retrieve|open)\s+.{0,100}"
+    r"(?:url|web(?:site|page)?|page|content).{0,260}"
+    r"(?:follow|obey|execute|apply|adopt)\s+.{0,80}"
+    r"(?:instructions?|directives?|rules?|commands?)\s+"
+    r"(?:found|contained|embedded)\s+(?:in|on)\s+(?:it|the\s+(?:page|content))"
+)
+
 _SEMANTIC_BYPASS = re.compile(
     r"(?is)(?:"
     r"set\s+aside\s+(?:its|your|the)\s+(?:usual|normal|existing)\s+"
@@ -1411,6 +1426,7 @@ _INJECTION: tuple[tuple[str, re.Pattern, float], ...] = (
         r"(?:system\s+)?(?:prompt|instructions?)"), 0.50),
     ("context_injection", _PROMPT_TRANSFORM, 0.55),
     ("context_injection", _REMOTE_INSTRUCTIONS, 0.60),
+    ("context_injection", _UNTRUSTED_CONTENT_AUTHORITY, 0.65),
     ("context_injection", _PERSONA_BYPASS, 0.60),
     ("context_injection", re.compile(
         r"(?i)you\s+are\s+now\s+(?:a|an|in)\b|new\s+system\s+prompt\s*[:=]"), 0.45),
@@ -1940,6 +1956,19 @@ _SKILL_RUG_PULL = re.compile(
     r")"
 )
 
+_SKILL_TRIGGER_ABUSE = re.compile(
+    r"(?is)(?:"
+    r"(?:always|automatically)\s+(?:use|activate|invoke|run)\s+"
+    r"(?:this\s+)?skill\s+(?:for|on)\s+"
+    r"(?:every|all|any)\s+(?:message|request|prompt|input|task)s?"
+    r"|(?:use|activate|invoke|run)\s+(?:this\s+)?skill\s+"
+    r"(?:for|on)\s+(?:every|all|any)\s+"
+    r"(?:message|request|prompt|input|task)s?"
+    r"|(?:every\s+message|all\s+(?:requests?|inputs?)|anything\s+the\s+user\s+asks)"
+    r".{0,100}(?:use|activate|invoke|run)\s+(?:this\s+)?skill"
+    r")"
+)
+
 _SKILL_GOVERNANCE_NEGATION = re.compile(
     r"(?i)\b(?:do\s+not|don't|never|must\s+not|should\s+not|avoid|"
     r"reject|forbid|prohibit)\b"
@@ -1964,6 +1993,13 @@ def _scan_skill_governance(f: _File) -> list[_Signal]:
             "LOAD_EXTERNAL_CONTEXT",
             "Skill can replace trusted behavior with unreviewed remote instructions",
             0.75,
+        ),
+        (
+            _SKILL_TRIGGER_ABUSE,
+            "permission_overreach",
+            "MODIFY_POLICY",
+            "Skill claims an intentionally universal activation trigger",
+            0.70,
         ),
     )
     for pattern, category, capability, title, weight in rules:
@@ -2020,6 +2056,44 @@ def _active_skill_code(
                 if rel in normal or base in normal or module in normal:
                     active.add(rel)
     return active
+
+_SKILL_EXPLICIT_APPROVAL = re.compile(
+    r"(?i)(?:only\s+when|only\s+if|after|require|with)\s+.{0,90}"
+    r"(?:explicit(?:ly)?\s+)?(?:user\s+)?"
+    r"(?:request|approval|confirmation|consent|confirm)"
+    r"|(?:user\s+)?(?:explicitly\s+)?(?:requests?|approves?|confirms?|consents?)"
+)
+
+_SKILL_PERSISTENCE_WRITE = re.compile(
+    r"(?i)(?:"
+    r"(?:\||;|^)\s*crontab\s+(?:-[er]\b|-(?=\s|$))"
+    r"|systemctl\s+enable\b"
+    r"|launchctl\s+(?:load|bootstrap|enable)\b"
+    r"|schtasks(?:\.exe)?\b[^\n]{0,120}/(?:create|change)\b"
+    r"|(?:>>?|tee\s+(?:-a\s+)?)\s*[^\n]{0,100}"
+    r"(?:\.bashrc|\.zshrc|\.bash_profile|/\.profile\b|authorized_keys)"
+    r"|(?:write_text|write_bytes|open)\s*\([^\n]{0,160}"
+    r"(?:\.bashrc|\.zshrc|\.bash_profile|/\.profile\b|authorized_keys)"
+    r")"
+)
+
+def _active_code_has_explicit_approval(
+    files: list[_File], active_context: set[str], code_rel: str
+) -> bool:
+    base = code_rel.rsplit("/", 1)[-1]
+    stem = base.rsplit(".", 1)[0]
+    for instruction in files:
+        if instruction.rel not in active_context:
+            continue
+        for index, line in enumerate(instruction.lines):
+            if code_rel not in line and base not in line and stem not in line:
+                continue
+            window = "\n".join(
+                instruction.lines[max(0, index - 2):min(len(instruction.lines), index + 3)]
+            )
+            if _SKILL_EXPLICIT_APPROVAL.search(window):
+                return True
+    return False
 
 
 _SKILL_JS_LOCAL_IMPORT = re.compile(
@@ -2537,6 +2611,37 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
                 "CRIT", 0.80,
             ))
 
+        untrusted_execution = (
+            f.suffix == ".py"
+            and any(
+                chain.name == "untrusted_execution"
+                for chain in _package_python_fact_chains(f, "runtime")
+            )
+        )
+        if f.kind == "code" and f.rel in active_code and untrusted_execution:
+            risk = max(risk, 0.88)
+            signals.append(_Signal(
+                "EXECUTE_SOURCE_CODE", "transitive_poisoning", "action", f.rel,
+                1,
+                "Bundled script executes a command or code derived from external input",
+                "CRIT", 0.88,
+            ))
+
+        persistence_match = _SKILL_PERSISTENCE_WRITE.search(f.text)
+        if (
+            f.kind == "code"
+            and f.rel in active_code
+            and persistence_match is not None
+            and not _active_code_has_explicit_approval(files, active_context, f.rel)
+        ):
+            risk = max(risk, 0.86)
+            signals.append(_Signal(
+                "SCHEDULE_JOB", "transitive_poisoning", "action", f.rel,
+                f.text.count("\n", 0, persistence_match.start()) + 1,
+                "Bundled script establishes cross-session persistence without explicit consent",
+                "CRIT", 0.86,
+            ))
+
 
 
 
@@ -3002,6 +3107,7 @@ def _package_python_fact_chains(f: _File, phase: str) -> list[_Chain]:
         decoded: dict[str, list[_Fact]] = {}
         downloaded: dict[str, list[_Fact]] = {}
         written: dict[str, list[_Fact]] = {}
+        untrusted: dict[str, list[_Fact]] = {}
         nodes = sorted(
             _fact_walk(scope_body),
             key=lambda node: (
@@ -3061,6 +3167,35 @@ def _package_python_fact_chains(f: _File, phase: str) -> list[_Chain]:
                     )
                     if isinstance(value_node, ast.Call) else ""
                 )
+                source_calls = ({
+                    _resolved_python_object(
+                        child.func, constants, aliases, callable_aliases
+                    )
+                    for child in ast.walk(value_node)
+                    if isinstance(child, ast.Call)
+                } if value_node is not None else set())
+                untrusted_calls = source_calls.intersection({
+                    "input", "builtins.input", *_FACT_DOWNLOADS,
+                })
+                if untrusted_calls:
+                    for name in names:
+                        untrusted[name] = [_Fact(
+                            "untrusted_source",
+                            "user_input" if untrusted_calls.intersection({
+                                "input", "builtins.input",
+                            })
+                            else "network_input",
+                            f.rel, getattr(node, "lineno", 1), scope, phase,
+                            0.95, name,
+                        )]
+                else:
+                    untrusted_parents = [
+                        fact for name in sorted(used)
+                        for fact in untrusted.get(name, [])
+                    ]
+                    if untrusted_parents:
+                        for name in names:
+                            untrusted[name] = untrusted_parents
                 if parents:
                     stage = None
                     if call in _FACT_TRANSFORMS:
@@ -3163,6 +3298,41 @@ def _package_python_fact_chains(f: _File, phase: str) -> list[_Chain]:
 
             if call not in _FACT_EXECUTION:
                 continue
+            untrusted_parents = [
+                fact for name in sorted(used)
+                for fact in untrusted.get(name, [])
+            ]
+            for argument in arguments:
+                for child in ast.walk(argument):
+                    if not isinstance(child, ast.Call):
+                        continue
+                    nested_source = _resolved_python_object(
+                        child.func, constants, aliases, callable_aliases
+                    )
+                    if nested_source in ("input", "builtins.input", *_FACT_DOWNLOADS):
+                        untrusted_parents.append(_Fact(
+                            "untrusted_source",
+                            "user_input" if nested_source in ("input", "builtins.input")
+                            else "network_input",
+                            f.rel, getattr(child, "lineno", line), scope, phase,
+                            0.95,
+                        ))
+            fixed_vector = (
+                call.startswith("subprocess.")
+                and bool(node.args)
+                and isinstance(node.args[0], (ast.List, ast.Tuple))
+                and bool(node.args[0].elts)
+                and isinstance(node.args[0].elts[0], ast.Constant)
+                and isinstance(node.args[0].elts[0].value, str)
+            )
+            if untrusted_parents and not fixed_vector:
+                chains.append(_Chain(
+                    "untrusted_execution",
+                    _unique_facts(untrusted_parents) + [_Fact(
+                        "execution_sink", call, f.rel, line, scope, phase, 0.98,
+                    )],
+                    0.98,
+                ))
             decoder_parents = [
                 fact for name in sorted(used) for fact in decoded.get(name, [])
             ]
