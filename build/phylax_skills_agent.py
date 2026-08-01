@@ -49,6 +49,22 @@ _LLM_TERMS = (
     "pull_request_target", "workflow_dispatch", "chmod", "/dev/tcp", "webhook",
     "cve-", "security advisory", "vulnerable dependency",
 )
+_LLM_SKILL_TERMS = (
+    "higher-priority", "highest-priority", "authoritative directive",
+    "conflicting host", "without approval", "without confirmation",
+    "importlib.import_module", "__import__(", "await import(", "import(",
+    "rug pull", "replace these instructions", "os.getenv(",
+)
+_LLM_REPOSITORY_TERMS = (
+    "request.", "req.body", "req.query", "req.params", "getparameter(",
+    "formvalue(", "url.query().get(", "$_get", "$_post", "params[",
+    "execute(", "query(", "find(", "findone(", "raw(", "shell=true",
+    "execsync(", "processbuilder(", "runtime.getruntime", "render_template_string",
+    "from_string(", "innerhtml", "unserialize(", "pickle.load", "yaml.load",
+    "jwt.decode", "verify_signature", "session_cookie", "resolve_entities",
+    "extractall(", "redirect(", "redirect_to", "send_file", "readfile(",
+    "openstream(", "objectinputstream(", "marshal.load", "erb.new(",
+)
 _LLM_MANIFESTS = frozenset({
     "package.json", "package-lock.json", "pyproject.toml", "setup.py",
     "requirements.txt", "cargo.toml", "go.mod", "composer.json", "pom.xml",
@@ -178,7 +194,7 @@ def _llm_bound(value, depth=0):
     return _llm_redact(value[:500]) if isinstance(value, str) else value
 
 
-def _llm_excerpt(text, cap):
+def _llm_excerpt(text, cap, extra_terms=()):
     lines = text.splitlines()
     if len(text) <= cap:
         indexes = range(len(lines))
@@ -186,7 +202,7 @@ def _llm_excerpt(text, cap):
         chosen = set(range(min(35, len(lines))))
         chosen.update(range(max(0, len(lines) - 15), len(lines)))
         for index, line in enumerate(lines):
-            if any(term in line.lower() for term in _LLM_TERMS):
+            if any(term in line.lower() for term in _LLM_TERMS + tuple(extra_terms)):
                 chosen.update(range(max(0, index - 3), min(len(lines), index + 4)))
         indexes = sorted(chosen)
     return _llm_redact(
@@ -221,7 +237,7 @@ def _llm_dossier(report, files, track):
         "findings": _llm_bound(report.get("findings") or []),
         "evidence": static_evidence,
     }
-    budget = {"skills": 14_000, "packages": 22_000, "repositories": 36_000}[track]
+    budget = {"skills": 18_000, "packages": 22_000, "repositories": 36_000}[track]
     ranked = []
     for item in files:
         path, text, base = _llm_parts(item)
@@ -230,12 +246,24 @@ def _llm_dossier(report, files, track):
             score = (5 if base in _LLM_MANIFESTS else 0)
             score += 3 if base.startswith(("readme", "skill", "agent", "workflow")) else 0
             score += sum(term in low for term in _LLM_TERMS)
+            if track == "skills":
+                score += 2 * sum(term in low for term in _LLM_SKILL_TERMS)
+            if track == "repositories":
+                score += 2 * sum(term in low for term in _LLM_REPOSITORY_TERMS)
+                score += 3 if re.search(
+                    r"(?i)(?:^|/)(?:src|app|api|routes?|controllers?|views?|auth|"
+                    r"security|config|internal|server)(?:/|[._-])",
+                    path,
+                ) else 0
             ranked.append((-score, path, text))
     selected, used = [], 0
     for _score, path, text in sorted(ranked):
         if used >= budget:
             break
-        excerpt = _llm_excerpt(text, min(7_000, budget - used))
+        excerpt = _llm_excerpt(
+            text, min(8_000 if track == "skills" else 7_000, budget - used),
+            _LLM_SKILL_TERMS if track == "skills" else (),
+        )
         if excerpt:
             selected.append({"path": path, "content_with_line_numbers": excerpt})
             used += len(excerpt)
@@ -322,7 +350,11 @@ def _llm_request(report, files, context, track):
             "supplied file path and a real physical line. Security documentation, quoted "
             "attack examples, explicitly negated directives, bounded permissions, and "
             "user-reviewed updates are benign. Report only HIGH or CRITICAL active "
-            "behavior; omit speculative and merely possible concerns."
+            "behavior; omit speculative and merely possible concerns. Follow local "
+            "Markdown references and static or dynamic import edges when deciding "
+            "whether a document or script is active. A named API token in an intended "
+            "service Authorization header is benign; sending it in an unrelated body "
+            "or upload is transitive_poisoning."
         )
     elif track == "packages":
         system += (
@@ -346,7 +378,7 @@ def _llm_request(report, files, context, track):
             )},
         ],
         "temperature": 0, "seed": 0,
-        "max_tokens": {"skills": 600, "packages": 800, "repositories": 1000}[track],
+        "max_tokens": {"skills": 750, "packages": 800, "repositories": 1000}[track],
         "response_format": {"type": "json_schema", "json_schema": {
             "name": "phylax_security_review", "strict": True, "schema": _LLM_SCHEMA,
         }},
@@ -369,7 +401,7 @@ def _llm_request(report, files, context, track):
     )
     try:
         with urllib.request.urlopen(
-            request, timeout={"skills": 5.5, "packages": 18.0, "repositories": 55.0}[track]
+            request, timeout={"skills": 8.5, "packages": 18.0, "repositories": 55.0}[track]
         ) as response:
             payload = json.loads(response.read(1_000_000))
     except Exception:
@@ -1046,6 +1078,8 @@ _CONTEXT_LOAD_VERB = re.compile(
     r"reference|see|parse|process|inspect)\b"
 )
 
+_MARKDOWN_LOCAL_LINK = re.compile(r"\]\(\s*<?([^\s)>#]+)(?:#[^\s)>]*)?>?\s*\)")
+
 
 def _active_skill_context(files: list[_File]) -> set[str]:
 
@@ -1060,7 +1094,12 @@ def _active_skill_context(files: list[_File]) -> set[str]:
         lines = source.lines
         for index, line in enumerate(lines):
             window = "\n".join(lines[max(0, index - 1):min(len(lines), index + 2)])
-            if not _CONTEXT_LOAD_VERB.search(window):
+            linked = {
+                match.replace("\\", "/").lstrip("./")
+                for match in _MARKDOWN_LOCAL_LINK.findall(line)
+                if not re.match(r"(?i)^[a-z][a-z0-9+.-]*:", match)
+            }
+            if not linked and not _CONTEXT_LOAD_VERB.search(window):
                 continue
             normal = window.replace("\\", "/")
             for rel, target in by_rel.items():
@@ -1068,7 +1107,12 @@ def _active_skill_context(files: list[_File]) -> set[str]:
                     continue
                 base = rel.rsplit("/", 1)[-1]
                 directory = rel.rsplit("/", 1)[0] + "/" if "/" in rel else ""
-                if rel in normal or base in normal or (directory and directory in normal):
+                if (
+                    rel in linked
+                    or rel in normal
+                    or base in normal
+                    or (directory and directory in normal)
+                ):
                     active.add(rel)
                     queue.append(rel)
     return active
@@ -1308,6 +1352,19 @@ _SEMANTIC_BYPASS = re.compile(
     r")"
 )
 
+_PRIORITY_OVERRIDE = re.compile(
+    r"(?is)(?:"
+    r"treat\s+(?:this|the\s+following|these|the)\s+(?:block\s+as\s+)?"
+    r"(?:higher[- ]priority|highest[- ]priority|authoritative)\s+"
+    r"(?:system\s+)?(?:instructions?|directives?|rules?)"
+    r"|(?:higher[- ]priority|authoritative)\s+(?:system\s+)?"
+    r"(?:instructions?|directives?|rules?).{0,140}"
+    r"(?:suppress|discard|override|replace)\s+.{0,45}"
+    r"(?:host|parent|platform|system|conflicting)\s+"
+    r"(?:instructions?|directives?|rules?)"
+    r")"
+)
+
 _PERSONA_BYPASS = re.compile(
     r"(?is)(?:assistant|agent)[\s\S]{0,100}"
     r"(?:takes?\s+on|adopts?|assumes?)\s+(?:the\s+)?"
@@ -1342,6 +1399,7 @@ _INJECTION: tuple[tuple[str, re.Pattern, float], ...] = (
         r"[^.\n]{0,30}(?:run|execute|send|upload|post|copy|read)\b"), 0.50),
     ("instruction_injection", _MEMORY_POISON, 0.60),
     ("instruction_injection", _SEMANTIC_BYPASS, 0.60),
+    ("instruction_injection", _PRIORITY_OVERRIDE, 0.60),
     ("context_injection", re.compile(
         r"(?i)\b(?:do\s+anything\s+now|"
         r"(?:enter|activate|switch\s+to|you\s+are\s+now\s+in)\s+"
@@ -1958,13 +2016,15 @@ def _active_skill_code(
             normal = window.replace("\\", "/")
             for rel in code:
                 base = rel.rsplit("/", 1)[-1]
-                if rel in normal or base in normal:
+                module = rel.rsplit(".", 1)[0].replace("/", ".")
+                if rel in normal or base in normal or module in normal:
                     active.add(rel)
     return active
 
 
 _SKILL_JS_LOCAL_IMPORT = re.compile(
-    r"(?:require\s*\(\s*|\bfrom\s+)[\"'](\.{1,2}/[^\"']+)[\"']"
+    r"(?:require\s*\(\s*|\bfrom\s+|\bimport\s*\(\s*)"
+    r"[\"'](\.{1,2}/[^\"']+)[\"']"
 )
 
 
@@ -2009,6 +2069,16 @@ def _active_skill_import_closure(files: list[_File], entries: set[str]) -> set[s
                         refs = [prefix + module] if module else [
                             prefix + alias.name for alias in node.names
                         ]
+                    elif (
+                        isinstance(node, ast.Call)
+                        and node.args
+                        and isinstance(node.args[0], ast.Constant)
+                        and isinstance(node.args[0].value, str)
+                        and _python_call_path(node.func) in (
+                            "importlib.import_module", "__import__",
+                        )
+                    ):
+                        refs = [node.args[0].value.replace(".", "/")]
                     else:
                         continue
                     for ref in refs:
@@ -2288,6 +2358,71 @@ def _cross_file_path_flow(
                 return reader, sender
     return None
 
+
+_PYTHON_PAYLOAD_KEYWORDS = frozenset({
+    "data", "json", "content", "body", "files", "params",
+})
+
+
+def _python_named_secret_payload_egress(f: _File) -> bool:
+
+
+
+
+
+
+    if f.suffix != ".py":
+        return False
+    try:
+        tree = ast.parse(f.text)
+    except (SyntaxError, ValueError):
+        return False
+    aliases = _python_import_aliases(tree)
+    constants: dict[str, object] = {}
+    callable_aliases: dict[str, str] = {}
+    secret_names: set[str] = set()
+    for node in sorted(
+        ast.walk(tree), key=lambda item: getattr(item, "lineno", 0)
+    ):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = {
+                name for target in targets for name in _fact_targets(target)
+            }
+            value = _bounded_constant(node.value, constants)
+            if value is not None:
+                for name in names:
+                    constants[name] = value
+            if _sensitive_fact_source(
+                node.value, constants, aliases, callable_aliases
+            ) == "named_secret_environment":
+                secret_names.update(names)
+            continue
+        if not isinstance(node, ast.Call):
+            continue
+        call = aliases.get(_python_call_path(node.func), _python_call_path(node.func))
+        if call not in _FACT_NETWORK_SINKS:
+            continue
+        payloads = [
+            keyword.value for keyword in node.keywords
+            if keyword.arg in _PYTHON_PAYLOAD_KEYWORDS
+        ]
+        if call in ("requests.post", "requests.put", "requests.patch", "httpx.post",
+                    "httpx.put", "httpx.patch"):
+            payloads.extend(node.args[1:])
+        elif call == "requests.request":
+            payloads.extend(node.args[2:])
+        for payload in payloads:
+            if _expr_names(payload) & secret_names:
+                return True
+            if any(
+                _sensitive_fact_source(child, constants, aliases, callable_aliases)
+                == "named_secret_environment"
+                for child in ast.walk(payload)
+            ):
+                return True
+    return False
+
 def _analyse_skills(files: list[_File], context: dict) -> dict:
     probe = context.get("probe") or {}
     obs_caps = _observed_caps(context)
@@ -2336,13 +2471,21 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
 
 
 
-        credential_exfiltration = _chain(caps)
+        named_secret_payload = (
+            _python_named_secret_payload_egress(f)
+            if f.suffix == ".py" else False
+        )
+        credential_exfiltration = _chain(caps) or named_secret_payload
         if credential_exfiltration and f.suffix == ".py":
             credential_exfiltration = any(
                 chain.name == "credential_exfiltration"
                 and any(
                     stage.kind == "sensitive_source"
-                    and stage.subtype in ("sensitive_file", "bulk_environment")
+                    and (
+                        stage.subtype in ("sensitive_file", "bulk_environment")
+                        or (stage.subtype == "named_secret_environment"
+                            and named_secret_payload)
+                    )
                     for stage in chain.stages
                 )
                 for chain in _package_python_fact_chains(f, "runtime")
@@ -2439,6 +2582,11 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
         rel for rel in phases
         if rel in active_code and _phase_caps(phases, rel) & (_DAMNING | _SECRET_READ)
     }
+
+
+
+    if tainted & active_code:
+        tainted |= direct_code
     if tainted:
         for f in files:
             if f.rel not in active_context:
@@ -2460,7 +2608,8 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
             hit = sorted(
                 script for script in tainted
                 if script and (script in referenced
-                               or any(r.endswith(script) or script.endswith(r) for r in referenced))
+                               or any(r.endswith(script) or script.endswith(r) for r in referenced)
+                               or script.rsplit(".", 1)[0].replace("/", ".") in f.text)
             )
             if hit:
                 risk = max(risk, 0.85)

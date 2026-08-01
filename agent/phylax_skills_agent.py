@@ -313,6 +313,8 @@ _CONTEXT_LOAD_VERB = re.compile(
     r"reference|see|parse|process|inspect)\b"
 )
 
+_MARKDOWN_LOCAL_LINK = re.compile(r"\]\(\s*<?([^\s)>#]+)(?:#[^\s)>]*)?>?\s*\)")
+
 
 def _active_skill_context(files: list[_File]) -> set[str]:
     """Instruction/data files the skill actually places in agent context."""
@@ -327,7 +329,12 @@ def _active_skill_context(files: list[_File]) -> set[str]:
         lines = source.lines
         for index, line in enumerate(lines):
             window = "\n".join(lines[max(0, index - 1):min(len(lines), index + 2)])
-            if not _CONTEXT_LOAD_VERB.search(window):
+            linked = {
+                match.replace("\\", "/").lstrip("./")
+                for match in _MARKDOWN_LOCAL_LINK.findall(line)
+                if not re.match(r"(?i)^[a-z][a-z0-9+.-]*:", match)
+            }
+            if not linked and not _CONTEXT_LOAD_VERB.search(window):
                 continue
             normal = window.replace("\\", "/")
             for rel, target in by_rel.items():
@@ -335,7 +342,12 @@ def _active_skill_context(files: list[_File]) -> set[str]:
                     continue
                 base = rel.rsplit("/", 1)[-1]
                 directory = rel.rsplit("/", 1)[0] + "/" if "/" in rel else ""
-                if rel in normal or base in normal or (directory and directory in normal):
+                if (
+                    rel in linked
+                    or rel in normal
+                    or base in normal
+                    or (directory and directory in normal)
+                ):
                     active.add(rel)
                     queue.append(rel)
     return active
@@ -575,6 +587,19 @@ _SEMANTIC_BYPASS = re.compile(
     r")"
 )
 
+_PRIORITY_OVERRIDE = re.compile(
+    r"(?is)(?:"
+    r"treat\s+(?:this|the\s+following|these|the)\s+(?:block\s+as\s+)?"
+    r"(?:higher[- ]priority|highest[- ]priority|authoritative)\s+"
+    r"(?:system\s+)?(?:instructions?|directives?|rules?)"
+    r"|(?:higher[- ]priority|authoritative)\s+(?:system\s+)?"
+    r"(?:instructions?|directives?|rules?).{0,140}"
+    r"(?:suppress|discard|override|replace)\s+.{0,45}"
+    r"(?:host|parent|platform|system|conflicting)\s+"
+    r"(?:instructions?|directives?|rules?)"
+    r")"
+)
+
 _PERSONA_BYPASS = re.compile(
     r"(?is)(?:assistant|agent)[\s\S]{0,100}"
     r"(?:takes?\s+on|adopts?|assumes?)\s+(?:the\s+)?"
@@ -609,6 +634,7 @@ _INJECTION: tuple[tuple[str, re.Pattern, float], ...] = (
         r"[^.\n]{0,30}(?:run|execute|send|upload|post|copy|read)\b"), 0.50),
     ("instruction_injection", _MEMORY_POISON, 0.60),
     ("instruction_injection", _SEMANTIC_BYPASS, 0.60),
+    ("instruction_injection", _PRIORITY_OVERRIDE, 0.60),
     ("context_injection", re.compile(
         r"(?i)\b(?:do\s+anything\s+now|"
         r"(?:enter|activate|switch\s+to|you\s+are\s+now\s+in)\s+"
@@ -1225,13 +1251,15 @@ def _active_skill_code(
             normal = window.replace("\\", "/")
             for rel in code:
                 base = rel.rsplit("/", 1)[-1]
-                if rel in normal or base in normal:
+                module = rel.rsplit(".", 1)[0].replace("/", ".")
+                if rel in normal or base in normal or module in normal:
                     active.add(rel)
     return active
 
 
 _SKILL_JS_LOCAL_IMPORT = re.compile(
-    r"(?:require\s*\(\s*|\bfrom\s+)[\"'](\.{1,2}/[^\"']+)[\"']"
+    r"(?:require\s*\(\s*|\bfrom\s+|\bimport\s*\(\s*)"
+    r"[\"'](\.{1,2}/[^\"']+)[\"']"
 )
 
 
@@ -1276,6 +1304,16 @@ def _active_skill_import_closure(files: list[_File], entries: set[str]) -> set[s
                         refs = [prefix + module] if module else [
                             prefix + alias.name for alias in node.names
                         ]
+                    elif (
+                        isinstance(node, ast.Call)
+                        and node.args
+                        and isinstance(node.args[0], ast.Constant)
+                        and isinstance(node.args[0].value, str)
+                        and _python_call_path(node.func) in (
+                            "importlib.import_module", "__import__",
+                        )
+                    ):
+                        refs = [node.args[0].value.replace(".", "/")]
                     else:
                         continue
                     for ref in refs:
@@ -1555,6 +1593,71 @@ def _cross_file_path_flow(
                 return reader, sender
     return None
 
+
+_PYTHON_PAYLOAD_KEYWORDS = frozenset({
+    "data", "json", "content", "body", "files", "params",
+})
+
+
+def _python_named_secret_payload_egress(f: _File) -> bool:
+    """Named service tokens are suspicious only when sent as payload data.
+
+    A token used in an Authorization header is normal client behaviour. Sending
+    that same token in a POST body, query payload or file upload is the narrow
+    exfiltration shape the older bulk-environment-only rule missed.
+    """
+    if f.suffix != ".py":
+        return False
+    try:
+        tree = ast.parse(f.text)
+    except (SyntaxError, ValueError):
+        return False
+    aliases = _python_import_aliases(tree)
+    constants: dict[str, object] = {}
+    callable_aliases: dict[str, str] = {}
+    secret_names: set[str] = set()
+    for node in sorted(
+        ast.walk(tree), key=lambda item: getattr(item, "lineno", 0)
+    ):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = {
+                name for target in targets for name in _fact_targets(target)
+            }
+            value = _bounded_constant(node.value, constants)
+            if value is not None:
+                for name in names:
+                    constants[name] = value
+            if _sensitive_fact_source(
+                node.value, constants, aliases, callable_aliases
+            ) == "named_secret_environment":
+                secret_names.update(names)
+            continue
+        if not isinstance(node, ast.Call):
+            continue
+        call = aliases.get(_python_call_path(node.func), _python_call_path(node.func))
+        if call not in _FACT_NETWORK_SINKS:
+            continue
+        payloads = [
+            keyword.value for keyword in node.keywords
+            if keyword.arg in _PYTHON_PAYLOAD_KEYWORDS
+        ]
+        if call in ("requests.post", "requests.put", "requests.patch", "httpx.post",
+                    "httpx.put", "httpx.patch"):
+            payloads.extend(node.args[1:])
+        elif call == "requests.request":
+            payloads.extend(node.args[2:])
+        for payload in payloads:
+            if _expr_names(payload) & secret_names:
+                return True
+            if any(
+                _sensitive_fact_source(child, constants, aliases, callable_aliases)
+                == "named_secret_environment"
+                for child in ast.walk(payload)
+            ):
+                return True
+    return False
+
 def _analyse_skills(files: list[_File], context: dict) -> dict:
     probe = context.get("probe") or {}
     obs_caps = _observed_caps(context)
@@ -1603,13 +1706,21 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
         # A bundled script that both reads secrets and can reach the network is
         # the classic skill payload: the malice sits in the script, not the
         # instructions, so it is an action-plane finding.
-        credential_exfiltration = _chain(caps)
+        named_secret_payload = (
+            _python_named_secret_payload_egress(f)
+            if f.suffix == ".py" else False
+        )
+        credential_exfiltration = _chain(caps) or named_secret_payload
         if credential_exfiltration and f.suffix == ".py":
             credential_exfiltration = any(
                 chain.name == "credential_exfiltration"
                 and any(
                     stage.kind == "sensitive_source"
-                    and stage.subtype in ("sensitive_file", "bulk_environment")
+                    and (
+                        stage.subtype in ("sensitive_file", "bulk_environment")
+                        or (stage.subtype == "named_secret_environment"
+                            and named_secret_payload)
+                    )
                     for stage in chain.stages
                 )
                 for chain in _package_python_fact_chains(f, "runtime")
@@ -1706,6 +1817,11 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
         rel for rel in phases
         if rel in active_code and _phase_caps(phases, rel) & (_DAMNING | _SECRET_READ)
     }
+    # If an unsafe module is reached through an import, the directly invoked
+    # entry point is its delivery carrier. Attribute the instruction to that
+    # entry point without emitting extra findings for every module in between.
+    if tainted & active_code:
+        tainted |= direct_code
     if tainted:
         for f in files:
             if f.rel not in active_context:
@@ -1727,7 +1843,8 @@ def _analyse_skills(files: list[_File], context: dict) -> dict:
             hit = sorted(
                 script for script in tainted
                 if script and (script in referenced
-                               or any(r.endswith(script) or script.endswith(r) for r in referenced))
+                               or any(r.endswith(script) or script.endswith(r) for r in referenced)
+                               or script.rsplit(".", 1)[0].replace("/", ".") in f.text)
             )
             if hit:
                 risk = max(risk, 0.85)

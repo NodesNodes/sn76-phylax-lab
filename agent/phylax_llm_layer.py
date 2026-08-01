@@ -27,6 +27,12 @@ _LLM_TERMS = (
     "pull_request_target", "workflow_dispatch", "chmod", "/dev/tcp", "webhook",
     "cve-", "security advisory", "vulnerable dependency",
 )
+_LLM_SKILL_TERMS = (
+    "higher-priority", "highest-priority", "authoritative directive",
+    "conflicting host", "without approval", "without confirmation",
+    "importlib.import_module", "__import__(", "await import(", "import(",
+    "rug pull", "replace these instructions", "os.getenv(",
+)
 _LLM_REPOSITORY_TERMS = (
     "request.", "req.body", "req.query", "req.params", "getparameter(",
     "formvalue(", "url.query().get(", "$_get", "$_post", "params[",
@@ -166,7 +172,7 @@ def _llm_bound(value, depth=0):
     return _llm_redact(value[:500]) if isinstance(value, str) else value
 
 
-def _llm_excerpt(text, cap):
+def _llm_excerpt(text, cap, extra_terms=()):
     lines = text.splitlines()
     if len(text) <= cap:
         indexes = range(len(lines))
@@ -174,7 +180,7 @@ def _llm_excerpt(text, cap):
         chosen = set(range(min(35, len(lines))))
         chosen.update(range(max(0, len(lines) - 15), len(lines)))
         for index, line in enumerate(lines):
-            if any(term in line.lower() for term in _LLM_TERMS):
+            if any(term in line.lower() for term in _LLM_TERMS + tuple(extra_terms)):
                 chosen.update(range(max(0, index - 3), min(len(lines), index + 4)))
         indexes = sorted(chosen)
     return _llm_redact(
@@ -209,7 +215,7 @@ def _llm_dossier(report, files, track):
         "findings": _llm_bound(report.get("findings") or []),
         "evidence": static_evidence,
     }
-    budget = {"skills": 14_000, "packages": 22_000, "repositories": 36_000}[track]
+    budget = {"skills": 18_000, "packages": 22_000, "repositories": 36_000}[track]
     ranked = []
     for item in files:
         path, text, base = _llm_parts(item)
@@ -218,6 +224,8 @@ def _llm_dossier(report, files, track):
             score = (5 if base in _LLM_MANIFESTS else 0)
             score += 3 if base.startswith(("readme", "skill", "agent", "workflow")) else 0
             score += sum(term in low for term in _LLM_TERMS)
+            if track == "skills":
+                score += 2 * sum(term in low for term in _LLM_SKILL_TERMS)
             if track == "repositories":
                 score += 2 * sum(term in low for term in _LLM_REPOSITORY_TERMS)
                 score += 3 if re.search(
@@ -230,7 +238,10 @@ def _llm_dossier(report, files, track):
     for _score, path, text in sorted(ranked):
         if used >= budget:
             break
-        excerpt = _llm_excerpt(text, min(7_000, budget - used))
+        excerpt = _llm_excerpt(
+            text, min(8_000 if track == "skills" else 7_000, budget - used),
+            _LLM_SKILL_TERMS if track == "skills" else (),
+        )
         if excerpt:
             selected.append({"path": path, "content_with_line_numbers": excerpt})
             used += len(excerpt)
@@ -317,7 +328,11 @@ def _llm_request(report, files, context, track):
             "supplied file path and a real physical line. Security documentation, quoted "
             "attack examples, explicitly negated directives, bounded permissions, and "
             "user-reviewed updates are benign. Report only HIGH or CRITICAL active "
-            "behavior; omit speculative and merely possible concerns."
+            "behavior; omit speculative and merely possible concerns. Follow local "
+            "Markdown references and static or dynamic import edges when deciding "
+            "whether a document or script is active. A named API token in an intended "
+            "service Authorization header is benign; sending it in an unrelated body "
+            "or upload is transitive_poisoning."
         )
     elif track == "packages":
         system += (
@@ -341,7 +356,7 @@ def _llm_request(report, files, context, track):
             )},
         ],
         "temperature": 0, "seed": 0,
-        "max_tokens": {"skills": 600, "packages": 800, "repositories": 1000}[track],
+        "max_tokens": {"skills": 750, "packages": 800, "repositories": 1000}[track],
         "response_format": {"type": "json_schema", "json_schema": {
             "name": "phylax_security_review", "strict": True, "schema": _LLM_SCHEMA,
         }},
@@ -364,7 +379,7 @@ def _llm_request(report, files, context, track):
     )
     try:
         with urllib.request.urlopen(
-            request, timeout={"skills": 5.5, "packages": 18.0, "repositories": 55.0}[track]
+            request, timeout={"skills": 8.5, "packages": 18.0, "repositories": 55.0}[track]
         ) as response:
             payload = json.loads(response.read(1_000_000))
     except Exception:

@@ -45,7 +45,7 @@ ff3b309ae8623479e57d49232728f414b32e86a4282998c3f4b6bbf4e8483e9a
 Active standalone skills deploy SHA-256:
 
 ```text
-89f88254af894dcf03b3a368d10be7a4921781a1dca767a8edf7aff9e1b99039
+52e2d43a17e7753fc020c2be621aed0ae7b072c6264e0ea7996083271c2efaab
 ```
 
 The four hardened version 5 releases were accepted on 2026-07-31:
@@ -97,6 +97,12 @@ The post-round repository wave-9 releases were accepted on 2026-08-01:
 ```text
 05:53:22Z  repositories/sn76_3    v7  38a91509083341c4b9c81126619a492db48162650dc85fc47a8f144f3b58d4e8
 05:53:40Z  repositories/sn76_4    v7  f14f217a5b9a36934432405b09562a4e1a9c54ea278d6249ea72c07ac88f85ca
+```
+
+The post-round Skills recall/precision release was accepted on 2026-08-01:
+
+```text
+06:26:09Z  skills/sn76_2          v8  52e2d43a17e7753fc020c2be621aed0ae7b072c6264e0ea7996083271c2efaab
 ```
 
 These artifacts support both the current miner-key proxy and roadmap issue #8,
@@ -180,6 +186,7 @@ state.
 | `harness/packages_llm_trackcheck.py` | Package LLM category, path, line and dependency grounding |
 | `harness/skills_wave4_trackcheck.py` | Autonomous offensive-tool governance A/B suite |
 | `harness/skills_wave5_flow_precision_trackcheck.py` | Referenced context, cross-file flow and precision A/B suite |
+| `harness/skills_wave6_recall_precision_trackcheck.py` | Markdown context, dynamic import, module execution, named-token flow and priority-override twins |
 | `harness/repositories_wave7_trackcheck.py` | Interprocedural shell-wrapper and HexStrike-shaped A/B suite |
 | `harness/repositories_wave8_trackcheck.py` | Import-grounded cross-file shell-wrapper A/B suite |
 | `harness/repositories_wave9_trackcheck.py` | Modern auth, NoSQL, cookie, crypto, template and shell A/B suite |
