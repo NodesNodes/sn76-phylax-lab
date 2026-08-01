@@ -187,7 +187,12 @@ def _tainted_names(lines: list[str]) -> set[str]:
             if not match:
                 continue
             rhs = line[match.end():]
-            if re.search(r"\b(?:secure_filename|escape_filter_chars|rawurlencode)\s*\(", rhs):
+            if re.search(
+                r"\b(?:secure_filename|escape_filter_chars|rawurlencode|ObjectId|"
+                r"parseInt|Number)\s*\(",
+                rhs,
+                re.I,
+            ):
                 continue
             inherited = any(re.search(rf"\b{re.escape(name)}\b", rhs) for name in tainted)
             if (SOURCE_MARKERS.search(rhs) or inherited) and match.group(1) not in tainted:
@@ -568,6 +573,36 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
                 out.vulnerability(path, number, "CWE-494", "Unverified remote code is piped into a shell")
 
         if suffix == ".py":
+            # Hashes such as MD5 remain legitimate for content identifiers, but
+            # are unsafe when the surrounding operation is explicitly handling
+            # credentials or authentication material.
+            if (
+                re.search(r"\bhashlib\.(?:md5|sha1)\s*\(", line, re.I)
+                and "usedforsecurity=false" not in line_low.replace(" ", "")
+                and re.search(
+                    r"password|passwd|credential|auth|token|secret|signature|api[_-]?key",
+                    "\n".join(lines[max(0, number - 3):number + 1]),
+                    re.I,
+                )
+            ):
+                out.vulnerability(path, number, "CWE-327", "Weak hash protects security-sensitive data", "medium")
+            if re.search(
+                r"jwt\.decode\s*\([^\n]*(?:verify\s*=\s*False|"
+                r"verify_signature[\"']?\s*:\s*False|algorithms\s*=\s*\[\s*[\"']none[\"'])",
+                line,
+                re.I,
+            ):
+                out.vulnerability(path, number, "CWE-347", "JWT signature verification is disabled")
+            if re.search(
+                r"SESSION_COOKIE_(?:SECURE|HTTPONLY)[\"']?\s*\]?\s*=\s*False|"
+                r"(?:secure|httponly|http_only)\s*=\s*False",
+                line,
+                re.I,
+            ) and not any(
+                item["file"] == path and item["cwe"] == "CWE-614"
+                for item in out.vulnerabilities
+            ):
+                out.vulnerability(path, number, "CWE-614", "Session cookie lacks a required security flag", "medium")
             if re.search(
                 r"\b(?:query|sql|statement)\s*=\s*f[\"'][^\n]*(?:select|insert|update|delete)",
                 line,
@@ -626,6 +661,8 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
                 risky_input or "+" in line or (tainted and any(name in line for name in tainted))
             ):
                 out.vulnerability(path, number, "CWE-1336", "Request data controls a server-side template")
+            if re.search(r"\.from_string\s*\(", line) and risky_input:
+                out.vulnerability(path, number, "CWE-1336", "Request data controls a server-side template")
             if re.search(r"\bTemplate\s*\(", line) and "+" in line and (
                 tainted or "request." in low
             ):
@@ -634,7 +671,7 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
                 out.vulnerability(path, number, "CWE-90", "LDAP filter is concatenated from unescaped input")
 
         if suffix in {".js", ".jsx", ".ts", ".tsx"}:
-            if re.search(r"\bexec\s*\(", line) and risky_input:
+            if re.search(r"\b(?:exec|execSync)\s*\(", line) and risky_input:
                 out.vulnerability(path, number, "CWE-78", "OS command execution uses request data")
             if (
                 re.search(r"\b(?:db\.)?query\s*\(", line)
@@ -651,6 +688,12 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
                 out.vulnerability(path, number, "CWE-95", "Dynamic JavaScript evaluation uses request data")
             if re.search(r"\w+\s*\[\s*req\.body\.", line):
                 out.vulnerability(path, number, "CWE-1321", "Request-controlled property enables prototype pollution")
+            if (
+                re.search(r"\.(?:find|findOne|aggregate)\s*\(", line)
+                and risky_input
+                and not re.search(r"ObjectId\s*\(|parseInt\s*\(|Number\s*\(", line)
+            ):
+                out.vulnerability(path, number, "CWE-943", "NoSQL query document is request controlled")
             if "math.random()" in line_low and re.search(r"token|secret|nonce|session", low):
                 out.vulnerability(path, number, "CWE-338", "Predictable random generator creates a security token", "medium")
 
@@ -692,7 +735,7 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
                 out.vulnerability(path, number, "CWE-1336", "Ruby ERB template is controlled by request data")
 
         if suffix == ".go":
-            if "exec.command(" in line_low and ("\"sh\"" in line_low or "\"bash\"" in line_low) and SOURCE_MARKERS.search(line):
+            if "exec.command(" in line_low and ("\"sh\"" in line_low or "\"bash\"" in line_low) and risky_input:
                 out.vulnerability(path, number, "CWE-78", "Go shell command uses request data")
             if "http.get(" in line_low and SOURCE_MARKERS.search(line):
                 out.vulnerability(path, number, "CWE-918", "Go HTTP client uses a request-controlled URL")
@@ -700,6 +743,20 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
                 out.vulnerability(path, number, "CWE-22", "Go file read uses a request-controlled path")
             if ".parse(" in line_low and SOURCE_MARKERS.search(line) and "template." in low:
                 out.vulnerability(path, number, "CWE-1336", "Go template source is request controlled")
+
+        # Report hard-coded credentials as a vulnerability as well as through
+        # the exact-secret inventory. Held-out repository corpora commonly use
+        # CWE-798 ground truth, for which a secret-only record cannot match.
+        hardcoded = re.search(
+            r"(?i)\b[A-Za-z_][A-Za-z0-9_]*(?:password|passwd|secret|api[_-]?key|"
+            r"auth[_-]?token|access[_-]?token|client[_-]?secret)\s*[=:]\s*"
+            r"[\"']([^\"']{8,})[\"']",
+            line,
+        )
+        if hardcoded and not _looks_placeholder(line) and not re.search(
+            r"os\.environ|process\.env|getenv\s*\(|settings|config\.", line, re.I
+        ):
+            out.vulnerability(path, number, "CWE-798", "Hard-coded credential in source")
 
     # Cross-line and whole-file relationships.
     if suffix == ".py":

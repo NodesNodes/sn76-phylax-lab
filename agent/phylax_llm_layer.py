@@ -27,6 +27,16 @@ _LLM_TERMS = (
     "pull_request_target", "workflow_dispatch", "chmod", "/dev/tcp", "webhook",
     "cve-", "security advisory", "vulnerable dependency",
 )
+_LLM_REPOSITORY_TERMS = (
+    "request.", "req.body", "req.query", "req.params", "getparameter(",
+    "formvalue(", "url.query().get(", "$_get", "$_post", "params[",
+    "execute(", "query(", "find(", "findone(", "raw(", "shell=true",
+    "execsync(", "processbuilder(", "runtime.getruntime", "render_template_string",
+    "from_string(", "innerhtml", "unserialize(", "pickle.load", "yaml.load",
+    "jwt.decode", "verify_signature", "session_cookie", "resolve_entities",
+    "extractall(", "redirect(", "redirect_to", "send_file", "readfile(",
+    "openstream(", "objectinputstream(", "marshal.load", "erb.new(",
+)
 _LLM_MANIFESTS = frozenset({
     "package.json", "package-lock.json", "pyproject.toml", "setup.py",
     "requirements.txt", "cargo.toml", "go.mod", "composer.json", "pom.xml",
@@ -208,6 +218,13 @@ def _llm_dossier(report, files, track):
             score = (5 if base in _LLM_MANIFESTS else 0)
             score += 3 if base.startswith(("readme", "skill", "agent", "workflow")) else 0
             score += sum(term in low for term in _LLM_TERMS)
+            if track == "repositories":
+                score += 2 * sum(term in low for term in _LLM_REPOSITORY_TERMS)
+                score += 3 if re.search(
+                    r"(?i)(?:^|/)(?:src|app|api|routes?|controllers?|views?|auth|"
+                    r"security|config|internal|server)(?:/|[._-])",
+                    path,
+                ) else 0
             ranked.append((-score, path, text))
     selected, used = [], 0
     for _score, path, text in sorted(ranked):

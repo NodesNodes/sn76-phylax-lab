@@ -15,8 +15,8 @@ change. The upstream subnet checkout remains read-only and lives separately at
 | `packages` | `sn76` | `phylax-packages-standalone-v2` | 7 | active, pending evaluation |
 | `mcp_servers` | `sn76_1` | `phylax-mcp-v1` | 3 | active, pending evaluation |
 | `skills` | `sn76_2` | `phylax-skills-v1` | 7 | active, pending evaluation |
-| `repositories` | `sn76_3` | `phylax-repositories-independent` | 6 | active, pending evaluation |
-| `repositories` | `sn76_4` | `phylax-repositories-wave6` | 6 | active, pending evaluation |
+| `repositories` | `sn76_3` | `phylax-repositories-independent` | 7 | active, pending evaluation |
+| `repositories` | `sn76_4` | `phylax-repositories-wave6` | 7 | active, pending evaluation |
 
 All profiles use entrypoint `agent_main`. Every track now has a standalone
 source. MCP version 2 switched `sn76_1` from the universal dispatcher to the
@@ -60,13 +60,13 @@ The four hardened version 5 releases were accepted on 2026-07-31:
 The active parallel standalone repositories wave-6 upload uses SHA-256:
 
 ```text
-f666e70c524a4bb2ec6e0379a60e4b6a4977ba38608540b45fa724b9f5df2f5d
+f14f217a5b9a36934432405b09562a4e1a9c54ea278d6249ea72c07ac88f85ca
 ```
 
 The active independent repositories v2 upload on `sn76_3` uses SHA-256:
 
 ```text
-b2e34da97cee38d0913c79a1f58faf520b4fb505b46e2eba9ac98def4b1ac2f3
+38a91509083341c4b9c81126619a492db48162650dc85fc47a8f144f3b58d4e8
 ```
 
 The validator-owned-key compatibility releases were accepted on 2026-07-31:
@@ -90,6 +90,13 @@ real-skill smoke gate:
 
 ```text
 18:19:16Z  skills/sn76_2          v7  89f88254af894dcf03b3a368d10be7a4921781a1dca767a8edf7aff9e1b99039
+```
+
+The post-round repository wave-9 releases were accepted on 2026-08-01:
+
+```text
+05:53:22Z  repositories/sn76_3    v7  38a91509083341c4b9c81126619a492db48162650dc85fc47a8f144f3b58d4e8
+05:53:40Z  repositories/sn76_4    v7  f14f217a5b9a36934432405b09562a4e1a9c54ea278d6249ea72c07ac88f85ca
 ```
 
 These artifacts support both the current miner-key proxy and roadmap issue #8,
@@ -175,6 +182,7 @@ state.
 | `harness/skills_wave5_flow_precision_trackcheck.py` | Referenced context, cross-file flow and precision A/B suite |
 | `harness/repositories_wave7_trackcheck.py` | Interprocedural shell-wrapper and HexStrike-shaped A/B suite |
 | `harness/repositories_wave8_trackcheck.py` | Import-grounded cross-file shell-wrapper A/B suite |
+| `harness/repositories_wave9_trackcheck.py` | Modern auth, NoSQL, cookie, crypto, template and shell A/B suite |
 | `harness/repositories_trackcheck.py` | Repository source/sink, lockfile and secret A/B suite |
 | `harness/repositories_wave3_trackcheck.py` | GitHub Actions and modern lockfile A/B suite |
 | `harness/repositories_wave4_trackcheck.py` | Backdoor, trusted-config, scope, secret-flow and supply-chain A/B suite |
@@ -412,6 +420,7 @@ The complete source-by-source rationale and validator A/B history are in
 | Repository wave-6 trackcheck | 0.6950 — all malicious twins 1.0000; all benign twins clean |
 | Repository wave-7 shell wrappers | 1.0000 — 2 malicious wrappers found; 2 benign twins clean |
 | Repository wave-8 cross-file wrappers | 1.0000 — baseline 0.5000; 2 missed flows recovered; 2 benign twins clean |
+| Repository wave-9 held-out recovery | 1.0000 — 8 malicious cases found; 8 benign twins clean; both agents |
 | Real skills precision smoke | 1,260 artifacts; all ALLOW after three held-out precision regressions were fixed |
 | Rulecheck | 22/22 |
 | Fuzz | 88/88 |

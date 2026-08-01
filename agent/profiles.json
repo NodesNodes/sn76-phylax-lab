@@ -1,29 +1,30 @@
 {
   "code_path": "agent/phylax_agent.py",
   "entrypoint": "agent_main",
-  "upstream_verified": "f455ac6",
+  "upstream_verified": "291057b",
   "working_code_sha256": "d57544e8d48831fabf134ca8c45b7cef57f42eb71a89b4aec87f10b49f0d3509",
   "active_code_sha256_by_track": {
     "packages": "ae41c7eb9a02a9ab90c8dd7e7646e829dfe2b15d8395082ef69eb41062a3487c",
     "mcp_servers": "ff3b309ae8623479e57d49232728f414b32e86a4282998c3f4b6bbf4e8483e9a",
     "skills": "89f88254af894dcf03b3a368d10be7a4921781a1dca767a8edf7aff9e1b99039",
-    "repositories": "f666e70c524a4bb2ec6e0379a60e4b6a4977ba38608540b45fa724b9f5df2f5d"
+    "repositories": "f14f217a5b9a36934432405b09562a4e1a9c54ea278d6249ea72c07ac88f85ca"
   },
   "active_llm_code_sha256_by_profile": {
     "sn76": "ae41c7eb9a02a9ab90c8dd7e7646e829dfe2b15d8395082ef69eb41062a3487c",
     "sn76_1": "ff3b309ae8623479e57d49232728f414b32e86a4282998c3f4b6bbf4e8483e9a",
     "sn76_2": "89f88254af894dcf03b3a368d10be7a4921781a1dca767a8edf7aff9e1b99039",
-    "sn76_3": "b2e34da97cee38d0913c79a1f58faf520b4fb505b46e2eba9ac98def4b1ac2f3",
-    "sn76_4": "f666e70c524a4bb2ec6e0379a60e4b6a4977ba38608540b45fa724b9f5df2f5d"
+    "sn76_3": "38a91509083341c4b9c81126619a492db48162650dc85fc47a8f144f3b58d4e8",
+    "sn76_4": "f14f217a5b9a36934432405b09562a4e1a9c54ea278d6249ea72c07ac88f85ca"
   },
   "active_llm_layer_sha256": {
     "packages": "54927141ed8249bcb3056e7e8e9119f63e1afbd8b019bb90816570179bf4fb34",
     "other_profiles": "c41834fbb739ca8231ffd02632f98802ac85f66d9a44053fe42b46508c40caf2",
+    "repositories": "e7ae2d33c58dd842aa9b992558dda8c753b3d0a334c86e4379a815a1bb95b8ab",
     "mcp": "5130f64bcca4a3f1dc35015599be2c64d47d5cacdf022c885a0f88b4d316f986"
   },
   "active_repository_code_sha256_by_hotkey": {
-    "5CCsj1evozyL9ekW6sjZE79dUUfV2XNSTYpFu83hAq9tqVcL": "b2e34da97cee38d0913c79a1f58faf520b4fb505b46e2eba9ac98def4b1ac2f3",
-    "5EjmzJs6rKhka6CrgQbEa72aFzjuwwETBwGRQLpTMuHAigmi": "f666e70c524a4bb2ec6e0379a60e4b6a4977ba38608540b45fa724b9f5df2f5d"
+    "5CCsj1evozyL9ekW6sjZE79dUUfV2XNSTYpFu83hAq9tqVcL": "38a91509083341c4b9c81126619a492db48162650dc85fc47a8f144f3b58d4e8",
+    "5EjmzJs6rKhka6CrgQbEa72aFzjuwwETBwGRQLpTMuHAigmi": "f14f217a5b9a36934432405b09562a4e1a9c54ea278d6249ea72c07ac88f85ca"
   },
   "profiles": [
     {
@@ -97,20 +98,20 @@
       "evaluation_state": "pending",
       "eligibility_state": "updated",
       "qualifies_next_round": true,
-      "version": 6,
+      "version": 7,
       "agent_id": "ab89e82868f341b8babdee9ff5de70f3",
-      "submitted_at": "2026-07-31T09:46:22.895881Z",
-      "submitted_code_sha256": "b2e34da97cee38d0913c79a1f58faf520b4fb505b46e2eba9ac98def4b1ac2f3",
+      "submitted_at": "2026-08-01T05:53:22.182072Z",
+      "submitted_code_sha256": "38a91509083341c4b9c81126619a492db48162650dc85fc47a8f144f3b58d4e8",
       "source_path": "agent/phylax_repositories_agent_v2.py",
       "deploy_path": "build/phylax_repositories_agent.py",
-      "source_sha256": "fdf8645c9a765a2f6166d4b82391774fde044b7b8c206c757f1922f42ce1051f",
-      "similarity_to_sn76_4": 0.03635812946825762,
-      "deploy_similarity_to_sn76_4": 0.2671770204611666,
+      "source_sha256": "b07295ba9359ad98d9fb65866a4cc92921b41958750f30308fca72c3177e8c17",
+      "similarity_to_sn76_4": 0.04038889336415068,
+      "deploy_similarity_to_sn76_4": 0.27520752498530276,
       "validator_similarity_threshold": 0.92,
-      "previous_round_score": 0.74575,
-      "previous_visible_rank": 2,
-      "rounds": [2],
-      "previous_submitted_code_sha256": "3296c664bbd37734889a673fd825c01120b702ce2f2efcd4172d3ce4266448a9",
+      "previous_round_score": 0.25,
+      "previous_visible_rank": 5,
+      "rounds": [3, 4],
+      "previous_submitted_code_sha256": "b2e34da97cee38d0913c79a1f58faf520b4fb505b46e2eba9ac98def4b1ac2f3",
       "inference_model": "openai/gpt-4.1-mini"
     },
     {
@@ -121,18 +122,20 @@
       "hotkey": "5EjmzJs6rKhka6CrgQbEa72aFzjuwwETBwGRQLpTMuHAigmi",
       "state": "active",
       "evaluation_state": "pending",
-      "version": 6,
+      "version": 7,
       "agent_id": "a98faa7507024a2284f1dd04414c6dad",
-      "submitted_at": "2026-07-31T09:46:35.944340Z",
-      "submitted_code_sha256": "f666e70c524a4bb2ec6e0379a60e4b6a4977ba38608540b45fa724b9f5df2f5d",
+      "submitted_at": "2026-08-01T05:53:40.206231Z",
+      "submitted_code_sha256": "f14f217a5b9a36934432405b09562a4e1a9c54ea278d6249ea72c07ac88f85ca",
       "source_path": "agent/phylax_repositories_agent.py",
       "deploy_path": "build/phylax_repositories_agent_wave6.py",
-      "source_sha256": "aef0ae1548fe1f1794a0809731a035957c7f724d3670b1d04dd59c965e26bd61",
+      "source_sha256": "a8848c4f50419a4b897df8afa68e7700cd69fb2d7aa3ff2922a84f9827296dee",
       "qualifies_next_round": true,
       "parallel_to_hotkey": "5CCsj1evozyL9ekW6sjZE79dUUfV2XNSTYpFu83hAq9tqVcL",
-      "previous_submitted_code_sha256": "e6d27033a079be79152a648400d63cb0b062387ec0fb441482a7246206178dc5",
+      "previous_round_score": 0.1583335,
+      "previous_visible_rank": 17,
+      "previous_submitted_code_sha256": "f666e70c524a4bb2ec6e0379a60e4b6a4977ba38608540b45fa724b9f5df2f5d",
       "inference_model": "openai/gpt-4.1-mini",
-      "rounds": []
+      "rounds": [4]
     }
   ]
 }

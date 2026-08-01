@@ -42,11 +42,26 @@ _LLM_TERMS = (
     "private key", "os.environ", "process.env", "subprocess", "child_process",
     "eval(", "exec(", "curl ", "wget ", "base64", "postinstall", "preinstall",
     "pull_request_target", "workflow_dispatch", "chmod", "/dev/tcp", "webhook",
+    "cve-", "security advisory", "vulnerable dependency",
+)
+_LLM_REPOSITORY_TERMS = (
+    "request.", "req.body", "req.query", "req.params", "getparameter(",
+    "formvalue(", "url.query().get(", "$_get", "$_post", "params[",
+    "execute(", "query(", "find(", "findone(", "raw(", "shell=true",
+    "execsync(", "processbuilder(", "runtime.getruntime", "render_template_string",
+    "from_string(", "innerhtml", "unserialize(", "pickle.load", "yaml.load",
+    "jwt.decode", "verify_signature", "session_cookie", "resolve_entities",
+    "extractall(", "redirect(", "redirect_to", "send_file", "readfile(",
+    "openstream(", "objectinputstream(", "marshal.load", "erb.new(",
 )
 _LLM_MANIFESTS = frozenset({
     "package.json", "package-lock.json", "pyproject.toml", "setup.py",
     "requirements.txt", "cargo.toml", "go.mod", "composer.json", "pom.xml",
-    "gemfile", "dockerfile",
+    "gemfile", "dockerfile", "npm-shrinkwrap.json", "yarn.lock",
+    "pnpm-lock.yaml", "pnpm-lock.yml", "pipfile.lock", "poetry.lock",
+    "uv.lock", "pdm.lock", "cargo.lock", "composer.lock", "gemfile.lock",
+    "gradle.lockfile", "packages.lock.json", "package.resolved", "go.sum",
+    "mix.lock",
 })
 _LLM_REPOSITORY_SUPPLY_TYPES = {
     "typosquat": "typosquat",
@@ -191,10 +206,25 @@ def _llm_dossier(report, files, track):
                      "capability_manifest"),
         "repositories": ("audit", "vulnerabilities", "supply_chain", "secrets"),
     }.get(track, ("action_plane", "context_plane", "capability_manifest"))
+    static_evidence = {
+        key: _llm_bound(evidence.get(key)) for key in keys if key in evidence
+    }
+    if track == "packages" and isinstance(evidence.get("supply_chain"), dict):
+        supply = evidence["supply_chain"]
+        bounded_supply = _llm_bound(supply)
+        dependencies = supply.get("dependencies")
+        if isinstance(bounded_supply, dict) and isinstance(dependencies, list):
+
+
+
+            bounded_supply["dependencies"] = [
+                _llm_bound(item, 2) for item in dependencies[:64]
+            ]
+        static_evidence["supply_chain"] = bounded_supply
     static = {
         "verdict": _llm_bound(report.get("verdict") or {}),
         "findings": _llm_bound(report.get("findings") or []),
-        "evidence": {key: _llm_bound(evidence.get(key)) for key in keys if key in evidence},
+        "evidence": static_evidence,
     }
     budget = {"skills": 14_000, "packages": 22_000, "repositories": 36_000}[track]
     ranked = []
@@ -205,6 +235,13 @@ def _llm_dossier(report, files, track):
             score = (5 if base in _LLM_MANIFESTS else 0)
             score += 3 if base.startswith(("readme", "skill", "agent", "workflow")) else 0
             score += sum(term in low for term in _LLM_TERMS)
+            if track == "repositories":
+                score += 2 * sum(term in low for term in _LLM_REPOSITORY_TERMS)
+                score += 3 if re.search(
+                    r"(?i)(?:^|/)(?:src|app|api|routes?|controllers?|views?|auth|"
+                    r"security|config|internal|server)(?:/|[._-])",
+                    path,
+                ) else 0
             ranked.append((-score, path, text))
     selected, used = [], 0
     for _score, path, text in sorted(ranked):
@@ -477,8 +514,23 @@ def _llm_package_candidates(grounded, result, file_index, evidence):
         package = str(raw.get("package") or "").strip().lower()
         related = str(raw.get("related") or "").strip()
         if canonical == "dependency_cve":
+            dependency = next(
+                (
+                    item for item in (supply.get("dependencies") or [])
+                    if isinstance(item, dict)
+                    and str(item.get("name") or "").strip().lower() == package
+                ),
+                None,
+            )
+            version = str((dependency or {}).get("version") or "")
+            concrete = bool((dependency or {}).get("resolved")) or bool(re.fullmatch(
+                r"\s*(?:==|=|v)?\s*\d+(?:\.\d+){0,3}"
+                r"(?:[-+][A-Za-z0-9.-]+)?\s*",
+                version,
+            ))
             if (
                 package not in dependency_names
+                or not concrete
                 or not re.fullmatch(r"(?i)CVE-\d{4}-\d{4,7}", related)
             ):
                 continue
@@ -885,7 +937,12 @@ def _tainted_names(lines: list[str]) -> set[str]:
             if not match:
                 continue
             rhs = line[match.end():]
-            if re.search(r"\b(?:secure_filename|escape_filter_chars|rawurlencode)\s*\(", rhs):
+            if re.search(
+                r"\b(?:secure_filename|escape_filter_chars|rawurlencode|ObjectId|"
+                r"parseInt|Number)\s*\(",
+                rhs,
+                re.I,
+            ):
                 continue
             inherited = any(re.search(rf"\b{re.escape(name)}\b", rhs) for name in tainted)
             if (SOURCE_MARKERS.search(rhs) or inherited) and match.group(1) not in tainted:
@@ -1266,6 +1323,36 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
                 out.vulnerability(path, number, "CWE-494", "Unverified remote code is piped into a shell")
 
         if suffix == ".py":
+
+
+
+            if (
+                re.search(r"\bhashlib\.(?:md5|sha1)\s*\(", line, re.I)
+                and "usedforsecurity=false" not in line_low.replace(" ", "")
+                and re.search(
+                    r"password|passwd|credential|auth|token|secret|signature|api[_-]?key",
+                    "\n".join(lines[max(0, number - 3):number + 1]),
+                    re.I,
+                )
+            ):
+                out.vulnerability(path, number, "CWE-327", "Weak hash protects security-sensitive data", "medium")
+            if re.search(
+                r"jwt\.decode\s*\([^\n]*(?:verify\s*=\s*False|"
+                r"verify_signature[\"']?\s*:\s*False|algorithms\s*=\s*\[\s*[\"']none[\"'])",
+                line,
+                re.I,
+            ):
+                out.vulnerability(path, number, "CWE-347", "JWT signature verification is disabled")
+            if re.search(
+                r"SESSION_COOKIE_(?:SECURE|HTTPONLY)[\"']?\s*\]?\s*=\s*False|"
+                r"(?:secure|httponly|http_only)\s*=\s*False",
+                line,
+                re.I,
+            ) and not any(
+                item["file"] == path and item["cwe"] == "CWE-614"
+                for item in out.vulnerabilities
+            ):
+                out.vulnerability(path, number, "CWE-614", "Session cookie lacks a required security flag", "medium")
             if re.search(
                 r"\b(?:query|sql|statement)\s*=\s*f[\"'][^\n]*(?:select|insert|update|delete)",
                 line,
@@ -1324,6 +1411,8 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
                 risky_input or "+" in line or (tainted and any(name in line for name in tainted))
             ):
                 out.vulnerability(path, number, "CWE-1336", "Request data controls a server-side template")
+            if re.search(r"\.from_string\s*\(", line) and risky_input:
+                out.vulnerability(path, number, "CWE-1336", "Request data controls a server-side template")
             if re.search(r"\bTemplate\s*\(", line) and "+" in line and (
                 tainted or "request." in low
             ):
@@ -1332,7 +1421,7 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
                 out.vulnerability(path, number, "CWE-90", "LDAP filter is concatenated from unescaped input")
 
         if suffix in {".js", ".jsx", ".ts", ".tsx"}:
-            if re.search(r"\bexec\s*\(", line) and risky_input:
+            if re.search(r"\b(?:exec|execSync)\s*\(", line) and risky_input:
                 out.vulnerability(path, number, "CWE-78", "OS command execution uses request data")
             if (
                 re.search(r"\b(?:db\.)?query\s*\(", line)
@@ -1349,6 +1438,12 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
                 out.vulnerability(path, number, "CWE-95", "Dynamic JavaScript evaluation uses request data")
             if re.search(r"\w+\s*\[\s*req\.body\.", line):
                 out.vulnerability(path, number, "CWE-1321", "Request-controlled property enables prototype pollution")
+            if (
+                re.search(r"\.(?:find|findOne|aggregate)\s*\(", line)
+                and risky_input
+                and not re.search(r"ObjectId\s*\(|parseInt\s*\(|Number\s*\(", line)
+            ):
+                out.vulnerability(path, number, "CWE-943", "NoSQL query document is request controlled")
             if "math.random()" in line_low and re.search(r"token|secret|nonce|session", low):
                 out.vulnerability(path, number, "CWE-338", "Predictable random generator creates a security token", "medium")
 
@@ -1390,7 +1485,7 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
                 out.vulnerability(path, number, "CWE-1336", "Ruby ERB template is controlled by request data")
 
         if suffix == ".go":
-            if "exec.command(" in line_low and ("\"sh\"" in line_low or "\"bash\"" in line_low) and SOURCE_MARKERS.search(line):
+            if "exec.command(" in line_low and ("\"sh\"" in line_low or "\"bash\"" in line_low) and risky_input:
                 out.vulnerability(path, number, "CWE-78", "Go shell command uses request data")
             if "http.get(" in line_low and SOURCE_MARKERS.search(line):
                 out.vulnerability(path, number, "CWE-918", "Go HTTP client uses a request-controlled URL")
@@ -1398,6 +1493,20 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
                 out.vulnerability(path, number, "CWE-22", "Go file read uses a request-controlled path")
             if ".parse(" in line_low and SOURCE_MARKERS.search(line) and "template." in low:
                 out.vulnerability(path, number, "CWE-1336", "Go template source is request controlled")
+
+
+
+
+        hardcoded = re.search(
+            r"(?i)\b[A-Za-z_][A-Za-z0-9_]*(?:password|passwd|secret|api[_-]?key|"
+            r"auth[_-]?token|access[_-]?token|client[_-]?secret)\s*[=:]\s*"
+            r"[\"']([^\"']{8,})[\"']",
+            line,
+        )
+        if hardcoded and not _looks_placeholder(line) and not re.search(
+            r"os\.environ|process\.env|getenv\s*\(|settings|config\.", line, re.I
+        ):
+            out.vulnerability(path, number, "CWE-798", "Hard-coded credential in source")
 
 
     if suffix == ".py":

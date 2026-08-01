@@ -49,11 +49,26 @@ _LLM_TERMS = (
     "private key", "os.environ", "process.env", "subprocess", "child_process",
     "eval(", "exec(", "curl ", "wget ", "base64", "postinstall", "preinstall",
     "pull_request_target", "workflow_dispatch", "chmod", "/dev/tcp", "webhook",
+    "cve-", "security advisory", "vulnerable dependency",
+)
+_LLM_REPOSITORY_TERMS = (
+    "request.", "req.body", "req.query", "req.params", "getparameter(",
+    "formvalue(", "url.query().get(", "$_get", "$_post", "params[",
+    "execute(", "query(", "find(", "findone(", "raw(", "shell=true",
+    "execsync(", "processbuilder(", "runtime.getruntime", "render_template_string",
+    "from_string(", "innerhtml", "unserialize(", "pickle.load", "yaml.load",
+    "jwt.decode", "verify_signature", "session_cookie", "resolve_entities",
+    "extractall(", "redirect(", "redirect_to", "send_file", "readfile(",
+    "openstream(", "objectinputstream(", "marshal.load", "erb.new(",
 )
 _LLM_MANIFESTS = frozenset({
     "package.json", "package-lock.json", "pyproject.toml", "setup.py",
     "requirements.txt", "cargo.toml", "go.mod", "composer.json", "pom.xml",
-    "gemfile", "dockerfile",
+    "gemfile", "dockerfile", "npm-shrinkwrap.json", "yarn.lock",
+    "pnpm-lock.yaml", "pnpm-lock.yml", "pipfile.lock", "poetry.lock",
+    "uv.lock", "pdm.lock", "cargo.lock", "composer.lock", "gemfile.lock",
+    "gradle.lockfile", "packages.lock.json", "package.resolved", "go.sum",
+    "mix.lock",
 })
 _LLM_REPOSITORY_SUPPLY_TYPES = {
     "typosquat": "typosquat",
@@ -198,10 +213,25 @@ def _llm_dossier(report, files, track):
                      "capability_manifest"),
         "repositories": ("audit", "vulnerabilities", "supply_chain", "secrets"),
     }.get(track, ("action_plane", "context_plane", "capability_manifest"))
+    static_evidence = {
+        key: _llm_bound(evidence.get(key)) for key in keys if key in evidence
+    }
+    if track == "packages" and isinstance(evidence.get("supply_chain"), dict):
+        supply = evidence["supply_chain"]
+        bounded_supply = _llm_bound(supply)
+        dependencies = supply.get("dependencies")
+        if isinstance(bounded_supply, dict) and isinstance(dependencies, list):
+
+
+
+            bounded_supply["dependencies"] = [
+                _llm_bound(item, 2) for item in dependencies[:64]
+            ]
+        static_evidence["supply_chain"] = bounded_supply
     static = {
         "verdict": _llm_bound(report.get("verdict") or {}),
         "findings": _llm_bound(report.get("findings") or []),
-        "evidence": {key: _llm_bound(evidence.get(key)) for key in keys if key in evidence},
+        "evidence": static_evidence,
     }
     budget = {"skills": 14_000, "packages": 22_000, "repositories": 36_000}[track]
     ranked = []
@@ -212,6 +242,13 @@ def _llm_dossier(report, files, track):
             score = (5 if base in _LLM_MANIFESTS else 0)
             score += 3 if base.startswith(("readme", "skill", "agent", "workflow")) else 0
             score += sum(term in low for term in _LLM_TERMS)
+            if track == "repositories":
+                score += 2 * sum(term in low for term in _LLM_REPOSITORY_TERMS)
+                score += 3 if re.search(
+                    r"(?i)(?:^|/)(?:src|app|api|routes?|controllers?|views?|auth|"
+                    r"security|config|internal|server)(?:/|[._-])",
+                    path,
+                ) else 0
             ranked.append((-score, path, text))
     selected, used = [], 0
     for _score, path, text in sorted(ranked):
@@ -484,8 +521,23 @@ def _llm_package_candidates(grounded, result, file_index, evidence):
         package = str(raw.get("package") or "").strip().lower()
         related = str(raw.get("related") or "").strip()
         if canonical == "dependency_cve":
+            dependency = next(
+                (
+                    item for item in (supply.get("dependencies") or [])
+                    if isinstance(item, dict)
+                    and str(item.get("name") or "").strip().lower() == package
+                ),
+                None,
+            )
+            version = str((dependency or {}).get("version") or "")
+            concrete = bool((dependency or {}).get("resolved")) or bool(re.fullmatch(
+                r"\s*(?:==|=|v)?\s*\d+(?:\.\d+){0,3}"
+                r"(?:[-+][A-Za-z0-9.-]+)?\s*",
+                version,
+            ))
             if (
                 package not in dependency_names
+                or not concrete
                 or not re.fullmatch(r"(?i)CVE-\d{4}-\d{4,7}", related)
             ):
                 continue
@@ -2031,7 +2083,7 @@ _VULN_RULES: tuple[tuple[re.Pattern, str, str, str, str], ...] = (
     (re.compile(r"(?i)hashlib\.(?:md5|sha1)\s*\(|createHash\s*\(\s*[\"'](?:md5|sha1)"),
      "CWE-327", "Use of a broken or risky cryptographic algorithm", "MEDIUM",
      "Use SHA-256 or stronger, and a KDF for passwords."),
-    (re.compile(r"""(?i)(?:password|passwd|secret|api[_-]?key|token)\s*[=:]\s*["'][^"'\s]{8,}["']"""),
+    (re.compile(r"""(?i)\b[A-Za-z_][A-Za-z0-9_]*(?:password|passwd|secret|api[_-]?key|token)\s*[=:]\s*["'][^"'\s]{8,}["']"""),
      "CWE-798", "Hardcoded credential in source", "HIGH",
      "Move the secret to configuration or a secret manager and rotate it."),
     (re.compile(r"""(?i)(?:open|send_file|sendFile|readFile)\s*\([^)]*(?:\+\s*\w|%\s*\w|\.format\s*\(|\$\{|\bf["'])"""),
@@ -2078,7 +2130,8 @@ _VULN_RULES: tuple[tuple[re.Pattern, str, str, str, str], ...] = (
     (re.compile(r"(?i)random\.(?:random|randint|choice)\s*\([^)]*\)[^\n]*(?:token|password|secret|key|nonce)"),
      "CWE-338", "Cryptographically weak pseudo-random generator for a secret", "MEDIUM",
      "Use secrets.token_bytes or os.urandom for security-sensitive values."),
-    (re.compile(r"(?i)jwt\.decode\s*\([^)]*verify\s*=\s*False|algorithms\s*=\s*\[\s*[\"']none[\"']"),
+    (re.compile(r"(?i)jwt\.decode\s*\([^\n]*(?:verify\s*=\s*False|"
+                r"verify_signature[\"']?\s*:\s*False|algorithms\s*=\s*\[\s*[\"']none[\"'])"),
      "CWE-347", "JWT signature verification disabled", "HIGH",
      "Verify the signature and pin the expected algorithm."),
 
@@ -2137,7 +2190,7 @@ _VULN_RULES: tuple[tuple[re.Pattern, str, str, str, str], ...] = (
     (re.compile(r"\.extractall\s*\((?![^)]*filter\s*=)"),
      "CWE-22", "Archive extracted without validating member paths (zip slip)", "HIGH",
      "Pass filter='data', or resolve each member and reject paths that escape."),
-    (re.compile(r"""(?i)\$where["']?\s*[:=]|\.find(?:One)?\s*\(\s*\{[^}\n]*""" + _UNTRUSTED),
+    (re.compile(r"""(?i)\$where["']?\s*[:=]|\.find(?:One)?\s*\(\s*(?:\{[^}\n]*""" + _UNTRUSTED + r"|" + _UNTRUSTED + r")"),
      "CWE-943", "NoSQL injection via user-controlled query document", "HIGH",
      "Cast inputs to the expected scalar type and never pass $where."),
 
@@ -2157,8 +2210,8 @@ _VULN_RULES: tuple[tuple[re.Pattern, str, str, str, str], ...] = (
         r"(?:\s*\[|\.)[^\]]+\]\s*="),
      "CWE-1321", "Prototype pollution via request-controlled property name", "HIGH",
      "Reject __proto__/constructor/prototype and use a fixed allow-list of keys."),
-    (re.compile(r"(?i)(?:httponly|http_only)\s*[=:]\s*(?:False|false)|"
-                r"secure\s*[=:]\s*(?:False|false)"),
+    (re.compile(r"(?i)(?:httponly|http_only|SESSION_COOKIE_(?:SECURE|HTTPONLY)[\"']?\s*\]?)"
+                r"\s*[=:]\s*(?:False|false)|secure\s*[=:]\s*(?:False|false)"),
      "CWE-614", "Session cookie set without Secure/HttpOnly", "MEDIUM",
      "Set Secure and HttpOnly on every session cookie."),
     (re.compile(
@@ -4276,10 +4329,22 @@ def _analyse_repositories(files: list[_File]) -> dict:
 
                 if (
                     f.suffix == ".py"
-                    and cwe not in ("CWE-89", "CWE-798")
+                    and cwe not in ("CWE-89", "CWE-798", "CWE-614")
                     and _inside_spans(absolute, noncode_spans)
                 ):
                     continue
+
+                if cwe == "CWE-327":
+                    nearby = "\n".join(f.lines[max(0, i - 3):i + 2])
+                    if (
+                        "usedforsecurity=false" in line.lower().replace(" ", "")
+                        or not re.search(
+                            r"(?i)password|passwd|credential|auth|token|secret|"
+                            r"signature|api[_-]?key",
+                            nearby,
+                        )
+                    ):
+                        continue
 
 
                 if cwe == "CWE-95" and (
@@ -4332,6 +4397,32 @@ def _analyse_repositories(files: list[_File]) -> dict:
                 accepted_lines.append(i + 1)
                 if len(accepted_lines) >= 8:
                     break
+        if f.suffix == ".go" and not in_test:
+            tainted: set[str] = set()
+            for line in f.lines:
+                match = re.match(
+                    r"\s*([A-Za-z_]\w*)\s*:=\s*(.+)", line
+                )
+                if match and re.search(
+                    r"r\.(?:FormValue|URL\.Query\(\)\.Get)\s*\(|"
+                    r"c\.(?:Query|Param)\s*\(",
+                    match.group(2),
+                ):
+                    tainted.add(match.group(1))
+            for i, line in enumerate(f.lines):
+                if not re.search(
+                    r"exec\.Command(?:Context)?\s*\(\s*[\"'](?:ba|z|k)?sh[\"']"
+                    r"\s*,\s*[\"']-c[\"']",
+                    line,
+                    re.I,
+                ):
+                    continue
+                if any(re.search(rf"\b{re.escape(name)}\b", line) for name in tainted):
+                    vulnerabilities.append(_repository_vulnerability(
+                        f, i + 1, "CWE-78",
+                        "Go shell command uses request-derived input", "HIGH",
+                        "Pass a fixed executable and validated argument vector without a shell.",
+                    ))
         if f.suffix == ".py" and not in_test:
             imported_shell_wrappers = _python_imported_shell_wrappers(
                 f, module_shell_wrappers

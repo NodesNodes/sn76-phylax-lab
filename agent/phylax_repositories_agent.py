@@ -1333,7 +1333,7 @@ _VULN_RULES: tuple[tuple[re.Pattern, str, str, str, str], ...] = (
     (re.compile(r"(?i)hashlib\.(?:md5|sha1)\s*\(|createHash\s*\(\s*[\"'](?:md5|sha1)"),
      "CWE-327", "Use of a broken or risky cryptographic algorithm", "MEDIUM",
      "Use SHA-256 or stronger, and a KDF for passwords."),
-    (re.compile(r"""(?i)(?:password|passwd|secret|api[_-]?key|token)\s*[=:]\s*["'][^"'\s]{8,}["']"""),
+    (re.compile(r"""(?i)\b[A-Za-z_][A-Za-z0-9_]*(?:password|passwd|secret|api[_-]?key|token)\s*[=:]\s*["'][^"'\s]{8,}["']"""),
      "CWE-798", "Hardcoded credential in source", "HIGH",
      "Move the secret to configuration or a secret manager and rotate it."),
     (re.compile(r"""(?i)(?:open|send_file|sendFile|readFile)\s*\([^)]*(?:\+\s*\w|%\s*\w|\.format\s*\(|\$\{|\bf["'])"""),
@@ -1380,7 +1380,8 @@ _VULN_RULES: tuple[tuple[re.Pattern, str, str, str, str], ...] = (
     (re.compile(r"(?i)random\.(?:random|randint|choice)\s*\([^)]*\)[^\n]*(?:token|password|secret|key|nonce)"),
      "CWE-338", "Cryptographically weak pseudo-random generator for a secret", "MEDIUM",
      "Use secrets.token_bytes or os.urandom for security-sensitive values."),
-    (re.compile(r"(?i)jwt\.decode\s*\([^)]*verify\s*=\s*False|algorithms\s*=\s*\[\s*[\"']none[\"']"),
+    (re.compile(r"(?i)jwt\.decode\s*\([^\n]*(?:verify\s*=\s*False|"
+                r"verify_signature[\"']?\s*:\s*False|algorithms\s*=\s*\[\s*[\"']none[\"'])"),
      "CWE-347", "JWT signature verification disabled", "HIGH",
      "Verify the signature and pin the expected algorithm."),
 
@@ -1439,7 +1440,7 @@ _VULN_RULES: tuple[tuple[re.Pattern, str, str, str, str], ...] = (
     (re.compile(r"\.extractall\s*\((?![^)]*filter\s*=)"),
      "CWE-22", "Archive extracted without validating member paths (zip slip)", "HIGH",
      "Pass filter='data', or resolve each member and reject paths that escape."),
-    (re.compile(r"""(?i)\$where["']?\s*[:=]|\.find(?:One)?\s*\(\s*\{[^}\n]*""" + _UNTRUSTED),
+    (re.compile(r"""(?i)\$where["']?\s*[:=]|\.find(?:One)?\s*\(\s*(?:\{[^}\n]*""" + _UNTRUSTED + r"|" + _UNTRUSTED + r")"),
      "CWE-943", "NoSQL injection via user-controlled query document", "HIGH",
      "Cast inputs to the expected scalar type and never pass $where."),
 
@@ -1459,8 +1460,8 @@ _VULN_RULES: tuple[tuple[re.Pattern, str, str, str, str], ...] = (
         r"(?:\s*\[|\.)[^\]]+\]\s*="),
      "CWE-1321", "Prototype pollution via request-controlled property name", "HIGH",
      "Reject __proto__/constructor/prototype and use a fixed allow-list of keys."),
-    (re.compile(r"(?i)(?:httponly|http_only)\s*[=:]\s*(?:False|false)|"
-                r"secure\s*[=:]\s*(?:False|false)"),
+    (re.compile(r"(?i)(?:httponly|http_only|SESSION_COOKIE_(?:SECURE|HTTPONLY)[\"']?\s*\]?)"
+                r"\s*[=:]\s*(?:False|false)|secure\s*[=:]\s*(?:False|false)"),
      "CWE-614", "Session cookie set without Secure/HttpOnly", "MEDIUM",
      "Set Secure and HttpOnly on every session cookie."),
     (re.compile(
@@ -3578,10 +3579,22 @@ def _analyse_repositories(files: list[_File]) -> dict:
 
                 if (
                     f.suffix == ".py"
-                    and cwe not in ("CWE-89", "CWE-798")
+                    and cwe not in ("CWE-89", "CWE-798", "CWE-614")
                     and _inside_spans(absolute, noncode_spans)
                 ):
                     continue
+
+                if cwe == "CWE-327":
+                    nearby = "\n".join(f.lines[max(0, i - 3):i + 2])
+                    if (
+                        "usedforsecurity=false" in line.lower().replace(" ", "")
+                        or not re.search(
+                            r"(?i)password|passwd|credential|auth|token|secret|"
+                            r"signature|api[_-]?key",
+                            nearby,
+                        )
+                    ):
+                        continue
 
 
                 if cwe == "CWE-95" and (
@@ -3634,6 +3647,32 @@ def _analyse_repositories(files: list[_File]) -> dict:
                 accepted_lines.append(i + 1)
                 if len(accepted_lines) >= 8:
                     break
+        if f.suffix == ".go" and not in_test:
+            tainted: set[str] = set()
+            for line in f.lines:
+                match = re.match(
+                    r"\s*([A-Za-z_]\w*)\s*:=\s*(.+)", line
+                )
+                if match and re.search(
+                    r"r\.(?:FormValue|URL\.Query\(\)\.Get)\s*\(|"
+                    r"c\.(?:Query|Param)\s*\(",
+                    match.group(2),
+                ):
+                    tainted.add(match.group(1))
+            for i, line in enumerate(f.lines):
+                if not re.search(
+                    r"exec\.Command(?:Context)?\s*\(\s*[\"'](?:ba|z|k)?sh[\"']"
+                    r"\s*,\s*[\"']-c[\"']",
+                    line,
+                    re.I,
+                ):
+                    continue
+                if any(re.search(rf"\b{re.escape(name)}\b", line) for name in tainted):
+                    vulnerabilities.append(_repository_vulnerability(
+                        f, i + 1, "CWE-78",
+                        "Go shell command uses request-derived input", "HIGH",
+                        "Pass a fixed executable and validated argument vector without a shell.",
+                    ))
         if f.suffix == ".py" and not in_test:
             imported_shell_wrappers = _python_imported_shell_wrappers(
                 f, module_shell_wrappers
