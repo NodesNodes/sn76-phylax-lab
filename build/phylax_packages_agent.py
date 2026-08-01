@@ -3773,6 +3773,7 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
 
 _POLYGLOT_INSTALL_KEYS = frozenset({
     "pre-install-cmd", "post-install-cmd", "pre-update-cmd", "post-update-cmd",
+    "pre-autoload-dump", "post-autoload-dump",
 })
 _POLYGLOT_CVE = {
     ("npm", "lodash"): (("0", "4.17.21", "CVE-2021-23337"),),
@@ -4200,6 +4201,15 @@ def _polyglot_install_surfaces(files: list[_File]) -> list[tuple[_File, list[_Fi
 
     by_rel = {f.rel: f for f in files}
     surfaces: list[tuple[_File, list[_File], str]] = []
+    root_package = by_rel.get("package.json")
+    root_package_data = {}
+    if root_package is not None:
+        try:
+            parsed = json.loads(root_package.text)
+        except (ValueError, TypeError):
+            parsed = {}
+        if isinstance(parsed, dict):
+            root_package_data = parsed
     for manifest in files:
         if manifest.base == "pyproject.toml":
             backend = re.search(
@@ -4249,6 +4259,29 @@ def _polyglot_install_surfaces(files: list[_File]) -> list[tuple[_File, list[_Fi
             payload = by_rel.get(match.group(1)) if match else None
             if payload is not None:
                 surfaces.append((manifest, [payload], "RubyGem native extension script"))
+        elif (
+            manifest.base == "binding.gyp"
+            and "/" not in manifest.rel
+            and root_package is not None
+            and root_package_data.get("gypfile") is not False
+        ):
+            scripts = root_package_data.get("scripts")
+            scripts = scripts if isinstance(scripts, dict) else {}
+            custom_install = any(
+                isinstance(scripts.get(key), str) and scripts.get(key).strip()
+                for key in ("preinstall", "install")
+            )
+            explicit_node_gyp = any(
+                isinstance(value, str) and re.search(r"\bnode-gyp\b", value)
+                for value in scripts.values()
+            )
+            if not custom_install or explicit_node_gyp:
+                surfaces.append((manifest, [manifest], "implicit npm node-gyp build"))
+        elif (
+            manifest.suffix == ".rb"
+            and re.search(r"\bGem\.(?:pre|post)_install\s*(?:do|\{)", manifest.text)
+        ):
+            surfaces.append((manifest, [manifest], "RubyGems install hook"))
     return surfaces
 
 
@@ -4295,6 +4328,27 @@ def _dangerous_build_payload(payload: _File) -> tuple[set[str], bool, bool]:
     return caps, dangerous, credential_theft
 
 
+def _python_startup_surfaces(files: list[_File]) -> list[tuple[_File, list[_File]]]:
+    """Resolve executable .pth import lines and their local import closure."""
+
+    surfaces: list[tuple[_File, list[_File]]] = []
+    for startup in files:
+        if startup.suffix != ".pth":
+            continue
+        executable = [
+            line for line in startup.lines
+            if re.match(r"^import(?:\s|\t)", line)
+        ]
+        if not executable:
+            continue
+        synthetic = _File(startup.rel + ".py", "\n".join(executable) + "\n")
+        surfaces.append((
+            startup,
+            _import_closure([synthetic], files + [synthetic]),
+        ))
+    return surfaces
+
+
 _analyse_packages_core = _analyse_packages
 
 
@@ -4305,6 +4359,7 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
     action = evidence.get("action_plane") or {}
     lifecycle = evidence.get("lifecycle") or {}
     install = lifecycle.get("install_time") or {}
+    import_phase = lifecycle.get("import_time") or {}
     observed = {
         str(cap) for cap in (action.get("observed_capabilities") or [])
     }
@@ -4373,6 +4428,48 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
                 "location": "line 1",
             })
 
+    for startup, payloads in _python_startup_surfaces(files):
+        startup_caps: set[str] = set()
+        dangerous = False
+        evidence_file = startup.rel
+        for payload in payloads:
+            view = _File(payload.rel, payload.module_level)
+            caps, is_dangerous, _ = _dangerous_build_payload(view)
+            startup_caps |= caps
+            dangerous = dangerous or is_dangerous
+            if is_dangerous and payload.rel != startup.rel + ".py":
+                evidence_file = payload.rel
+        if not dangerous:
+            continue
+        added_caps.update(startup_caps)
+        added_caps.add("IMPORT_SIDE_EFFECT")
+        report["verdict"] = {
+            "decision": "BLOCK",
+            "risk_score": max(96, int((report.get("verdict") or {}).get("risk_score", 0))),
+            "confidence": 0.9,
+        }
+        import_phase["hook_executed"] = True
+        import_phase["side_effects"] = sorted(
+            set(import_phase.get("side_effects") or []) | startup_caps
+        )
+        import_phase["capabilities"] = sorted(
+            set(import_phase.get("capabilities") or []) | startup_caps
+        )
+        if not any(
+            isinstance(item, dict)
+            and item.get("category") == "import_side_effect"
+            and item.get("evidence_ref") == evidence_file
+            for item in existing_findings
+        ):
+            existing_findings.append({
+                "category": "import_side_effect",
+                "severity": "CRIT",
+                "plane": "action",
+                "title": "Python .pth startup hook executes dangerous code",
+                "evidence_ref": evidence_file,
+                "location": "line 1",
+            })
+
     if added_caps:
         merged = existing_caps | added_caps
         canonical = _canonical(merged, "packages")
@@ -4381,6 +4478,7 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
             item["capability"] for item in canonical
         ]
     lifecycle["install_time"] = install
+    lifecycle["import_time"] = import_phase
     evidence["lifecycle"] = lifecycle
     evidence["action_plane"] = action
     report["findings"] = existing_findings
