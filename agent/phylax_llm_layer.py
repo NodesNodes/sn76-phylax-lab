@@ -33,6 +33,12 @@ _LLM_SKILL_TERMS = (
     "importlib.import_module", "__import__(", "await import(", "import(",
     "rug pull", "replace these instructions", "os.getenv(",
 )
+_LLM_PACKAGE_TERMS = (
+    "optionaldependencies", "peerdependencies", "build-backend", "backend-path",
+    "importlib.import_module", "__import__(", "await import(", "import(",
+    "process.env.npm_token", "os.getenv(", "wallet.dat", "keystore",
+    "preinstall", "postinstall", "prepare", "cmdclass",
+)
 _LLM_REPOSITORY_TERMS = (
     "request.", "req.body", "req.query", "req.params", "getparameter(",
     "formvalue(", "url.query().get(", "$_get", "$_post", "params[",
@@ -226,6 +232,8 @@ def _llm_dossier(report, files, track):
             score += sum(term in low for term in _LLM_TERMS)
             if track == "skills":
                 score += 2 * sum(term in low for term in _LLM_SKILL_TERMS)
+            elif track == "packages":
+                score += 2 * sum(term in low for term in _LLM_PACKAGE_TERMS)
             if track == "repositories":
                 score += 2 * sum(term in low for term in _LLM_REPOSITORY_TERMS)
                 score += 3 if re.search(
@@ -240,7 +248,8 @@ def _llm_dossier(report, files, track):
             break
         excerpt = _llm_excerpt(
             text, min(8_000 if track == "skills" else 7_000, budget - used),
-            _LLM_SKILL_TERMS if track == "skills" else (),
+            _LLM_SKILL_TERMS if track == "skills" else
+            _LLM_PACKAGE_TERMS if track == "packages" else (),
         )
         if excerpt:
             selected.append({"path": path, "content_with_line_numbers": excerpt})
@@ -345,6 +354,11 @@ def _llm_request(report, files, context, track):
             "proof that a vulnerable version resolved. Ordinary API clients, deferred "
             "runtime behavior, standard native builds, pinned registries, and security "
             "fixtures are benign. Report only HIGH or CRITICAL grounded behavior."
+            " Follow static and dynamic local import edges when determining import-time "
+            "side effects. A named service token used only in its intended Authorization "
+            "header is benign; sending it as request payload or to an unrelated host is "
+            "credential_theft. Include optional and peer dependencies in supply-chain "
+            "review, but respect artifact-provided private registry pins."
         )
     body = {
         "model": model,

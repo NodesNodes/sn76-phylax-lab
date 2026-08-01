@@ -33,7 +33,7 @@ agent/phylax_repositories_agent_v2.py → independent repositories (`sn76_3`)
 Active standalone packages v2 deploy SHA-256:
 
 ```text
-ae41c7eb9a02a9ab90c8dd7e7646e829dfe2b15d8395082ef69eb41062a3487c
+59c9aebf6eae666ed784554a1d3ad7dc2838a28e4d45fac9241f1dfe7ef5d931
 ```
 
 Active standalone MCP deploy SHA-256:
@@ -103,6 +103,12 @@ The post-round Skills recall/precision release was accepted on 2026-08-01:
 
 ```text
 06:26:09Z  skills/sn76_2          v8  52e2d43a17e7753fc020c2be621aed0ae7b072c6264e0ea7996083271c2efaab
+```
+
+The Packages indirect-flow recall release followed on 2026-08-01:
+
+```text
+06:37:52Z  packages/sn76          v8  59c9aebf6eae666ed784554a1d3ad7dc2838a28e4d45fac9241f1dfe7ef5d931
 ```
 
 These artifacts support both the current miner-key proxy and roadmap issue #8,
@@ -183,6 +189,7 @@ state.
 | `harness/packages_wave6_trackcheck.py` | Exact-pin and resolved-lockfile CVE A/B suite |
 | `harness/packages_wave7_precision_trackcheck.py` | Import/runtime scope and reachable exfiltration A/B suite |
 | `harness/packages_wave8_supply_chain_trackcheck.py` | Modern lockfile inventory and interval-CVE A/B suite |
+| `harness/packages_wave9_recall_precision_trackcheck.py` | Dynamic imports, named-token payloads and optional-dependency precision twins |
 | `harness/packages_llm_trackcheck.py` | Package LLM category, path, line and dependency grounding |
 | `harness/skills_wave4_trackcheck.py` | Autonomous offensive-tool governance A/B suite |
 | `harness/skills_wave5_flow_precision_trackcheck.py` | Referenced context, cross-file flow and precision A/B suite |

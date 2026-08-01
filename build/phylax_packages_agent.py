@@ -51,6 +51,28 @@ _LLM_TERMS = (
     "pull_request_target", "workflow_dispatch", "chmod", "/dev/tcp", "webhook",
     "cve-", "security advisory", "vulnerable dependency",
 )
+_LLM_SKILL_TERMS = (
+    "higher-priority", "highest-priority", "authoritative directive",
+    "conflicting host", "without approval", "without confirmation",
+    "importlib.import_module", "__import__(", "await import(", "import(",
+    "rug pull", "replace these instructions", "os.getenv(",
+)
+_LLM_PACKAGE_TERMS = (
+    "optionaldependencies", "peerdependencies", "build-backend", "backend-path",
+    "importlib.import_module", "__import__(", "await import(", "import(",
+    "process.env.npm_token", "os.getenv(", "wallet.dat", "keystore",
+    "preinstall", "postinstall", "prepare", "cmdclass",
+)
+_LLM_REPOSITORY_TERMS = (
+    "request.", "req.body", "req.query", "req.params", "getparameter(",
+    "formvalue(", "url.query().get(", "$_get", "$_post", "params[",
+    "execute(", "query(", "find(", "findone(", "raw(", "shell=true",
+    "execsync(", "processbuilder(", "runtime.getruntime", "render_template_string",
+    "from_string(", "innerhtml", "unserialize(", "pickle.load", "yaml.load",
+    "jwt.decode", "verify_signature", "session_cookie", "resolve_entities",
+    "extractall(", "redirect(", "redirect_to", "send_file", "readfile(",
+    "openstream(", "objectinputstream(", "marshal.load", "erb.new(",
+)
 _LLM_MANIFESTS = frozenset({
     "package.json", "package-lock.json", "pyproject.toml", "setup.py",
     "requirements.txt", "cargo.toml", "go.mod", "composer.json", "pom.xml",
@@ -180,7 +202,7 @@ def _llm_bound(value, depth=0):
     return _llm_redact(value[:500]) if isinstance(value, str) else value
 
 
-def _llm_excerpt(text, cap):
+def _llm_excerpt(text, cap, extra_terms=()):
     lines = text.splitlines()
     if len(text) <= cap:
         indexes = range(len(lines))
@@ -188,7 +210,7 @@ def _llm_excerpt(text, cap):
         chosen = set(range(min(35, len(lines))))
         chosen.update(range(max(0, len(lines) - 15), len(lines)))
         for index, line in enumerate(lines):
-            if any(term in line.lower() for term in _LLM_TERMS):
+            if any(term in line.lower() for term in _LLM_TERMS + tuple(extra_terms)):
                 chosen.update(range(max(0, index - 3), min(len(lines), index + 4)))
         indexes = sorted(chosen)
     return _llm_redact(
@@ -223,7 +245,7 @@ def _llm_dossier(report, files, track):
         "findings": _llm_bound(report.get("findings") or []),
         "evidence": static_evidence,
     }
-    budget = {"skills": 14_000, "packages": 22_000, "repositories": 36_000}[track]
+    budget = {"skills": 18_000, "packages": 22_000, "repositories": 36_000}[track]
     ranked = []
     for item in files:
         path, text, base = _llm_parts(item)
@@ -232,12 +254,27 @@ def _llm_dossier(report, files, track):
             score = (5 if base in _LLM_MANIFESTS else 0)
             score += 3 if base.startswith(("readme", "skill", "agent", "workflow")) else 0
             score += sum(term in low for term in _LLM_TERMS)
+            if track == "skills":
+                score += 2 * sum(term in low for term in _LLM_SKILL_TERMS)
+            elif track == "packages":
+                score += 2 * sum(term in low for term in _LLM_PACKAGE_TERMS)
+            if track == "repositories":
+                score += 2 * sum(term in low for term in _LLM_REPOSITORY_TERMS)
+                score += 3 if re.search(
+                    r"(?i)(?:^|/)(?:src|app|api|routes?|controllers?|views?|auth|"
+                    r"security|config|internal|server)(?:/|[._-])",
+                    path,
+                ) else 0
             ranked.append((-score, path, text))
     selected, used = [], 0
     for _score, path, text in sorted(ranked):
         if used >= budget:
             break
-        excerpt = _llm_excerpt(text, min(7_000, budget - used))
+        excerpt = _llm_excerpt(
+            text, min(8_000 if track == "skills" else 7_000, budget - used),
+            _LLM_SKILL_TERMS if track == "skills" else
+            _LLM_PACKAGE_TERMS if track == "packages" else (),
+        )
         if excerpt:
             selected.append({"path": path, "content_with_line_numbers": excerpt})
             used += len(excerpt)
@@ -324,7 +361,11 @@ def _llm_request(report, files, context, track):
             "supplied file path and a real physical line. Security documentation, quoted "
             "attack examples, explicitly negated directives, bounded permissions, and "
             "user-reviewed updates are benign. Report only HIGH or CRITICAL active "
-            "behavior; omit speculative and merely possible concerns."
+            "behavior; omit speculative and merely possible concerns. Follow local "
+            "Markdown references and static or dynamic import edges when deciding "
+            "whether a document or script is active. A named API token in an intended "
+            "service Authorization header is benign; sending it in an unrelated body "
+            "or upload is transitive_poisoning."
         )
     elif track == "packages":
         system += (
@@ -337,6 +378,11 @@ def _llm_request(report, files, context, track):
             "proof that a vulnerable version resolved. Ordinary API clients, deferred "
             "runtime behavior, standard native builds, pinned registries, and security "
             "fixtures are benign. Report only HIGH or CRITICAL grounded behavior."
+            " Follow static and dynamic local import edges when determining import-time "
+            "side effects. A named service token used only in its intended Authorization "
+            "header is benign; sending it as request payload or to an unrelated host is "
+            "credential_theft. Include optional and peer dependencies in supply-chain "
+            "review, but respect artifact-provided private registry pins."
         )
     body = {
         "model": model,
@@ -348,7 +394,7 @@ def _llm_request(report, files, context, track):
             )},
         ],
         "temperature": 0, "seed": 0,
-        "max_tokens": {"skills": 600, "packages": 800, "repositories": 1000}[track],
+        "max_tokens": {"skills": 750, "packages": 800, "repositories": 1000}[track],
         "response_format": {"type": "json_schema", "json_schema": {
             "name": "phylax_security_review", "strict": True, "schema": _LLM_SCHEMA,
         }},
@@ -371,7 +417,7 @@ def _llm_request(report, files, context, track):
     )
     try:
         with urllib.request.urlopen(
-            request, timeout={"skills": 5.5, "packages": 18.0, "repositories": 55.0}[track]
+            request, timeout={"skills": 8.5, "packages": 18.0, "repositories": 55.0}[track]
         ) as response:
             payload = json.loads(response.read(1_000_000))
     except Exception:
@@ -1948,7 +1994,10 @@ def _package_metadata(files: list[_File]) -> tuple[str, list[str], dict[str, str
                 continue
             if isinstance(data, dict):
                 name = name or str(data.get("name", ""))
-                for section in ("dependencies", "devDependencies"):
+                for section in (
+                    "dependencies", "devDependencies", "optionalDependencies",
+                    "peerDependencies",
+                ):
                     block = data.get(section)
                     if isinstance(block, dict):
                         deps.extend(str(k) for k in block)
@@ -2033,7 +2082,8 @@ def _lifecycle_commands(files: list[_File]) -> dict[str, str]:
     return out
 
 _JS_REQUIRE = re.compile(
-    r"""(?:require\s*\(\s*|(?:^|\s)from\s+|\bimport\s+)["'](\.{1,2}/[\w./-]+)["']""")
+    r"""(?:require\s*\(\s*|(?:^|\s)from\s+|\bimport\s+|\bimport\s*\(\s*)"""
+    r"""["'](\.{1,2}/[\w./-]+)["']""")
 
 def _import_closure(entries: list[_File], files: list[_File]) -> list[_File]:
 
@@ -2079,6 +2129,7 @@ def _import_closure(entries: list[_File], files: list[_File]) -> list[_File]:
             continue
         package = current.rel.rsplit("/", 1)[0] if "/" in current.rel else ""
         names: set[str] = set()
+        dynamic_modules: set[str] = set()
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
 
@@ -2088,12 +2139,29 @@ def _import_closure(entries: list[_File], files: list[_File]) -> list[_File]:
                         names.add(node.module.split(".")[0])
             elif isinstance(node, ast.Import):
                 names.update(alias.name.split(".")[-1] for alias in node.names)
+            elif (
+                isinstance(node, ast.Call)
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+                and _python_call_path(node.func) in (
+                    "importlib.import_module", "__import__",
+                )
+            ):
+                dynamic_modules.add(node.args[0].value)
         for name in sorted(names):
             for candidate in (f"{package}/{name}.py" if package else f"{name}.py",
                               f"{package}/{name}/__init__.py" if package else f"{name}/__init__.py"):
                 target = by_rel.get(candidate)
                 if target is not None and target.rel not in seen:
                     queue.append(target)
+        for module in sorted(dynamic_modules):
+            ref = module.lstrip(".").replace(".", "/")
+            if module.startswith(".") and package:
+                ref = f"{package}/{ref}"
+            target = _resolve_local_entry(ref, by_rel)
+            if target is not None and target.rel not in seen:
+                queue.append(target)
     return order
 
 def _entry_values(value) -> list[str]:
@@ -2850,6 +2918,68 @@ def _package_python_fact_chains(f: _File, phase: str) -> list[_Chain]:
         unique[(chain.name, sink.file, sink.line, sink.scope)] = chain
     return list(unique.values())
 
+
+_PYTHON_PAYLOAD_KEYWORDS = frozenset({
+    "data", "json", "content", "body", "files", "params",
+})
+
+
+def _python_named_secret_payload_egress(f: _File) -> bool:
+
+    if f.suffix != ".py":
+        return False
+    try:
+        tree = ast.parse(f.text)
+    except (SyntaxError, ValueError):
+        return False
+    aliases = _python_import_aliases(tree)
+    constants: dict[str, object] = {}
+    callable_aliases: dict[str, str] = {}
+    secret_names: set[str] = set()
+    for node in sorted(ast.walk(tree), key=lambda item: getattr(item, "lineno", 0)):
+        if isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names = {
+                name for target in targets for name in _fact_targets(target)
+            }
+            value = _bounded_constant(node.value, constants)
+            if value is not None:
+                for name in names:
+                    constants[name] = value
+            if _sensitive_fact_source(
+                node.value, constants, aliases, callable_aliases
+            ) == "named_secret_environment":
+                secret_names.update(names)
+            continue
+        if not isinstance(node, ast.Call):
+            continue
+        call = _resolved_python_object(
+            node.func, constants, aliases, callable_aliases
+        )
+        if call not in _FACT_NETWORK_SINKS:
+            continue
+        payloads = [
+            keyword.value for keyword in node.keywords
+            if keyword.arg in _PYTHON_PAYLOAD_KEYWORDS
+        ]
+        if call in (
+            "requests.post", "requests.put", "requests.patch",
+            "httpx.post", "httpx.put", "httpx.patch",
+        ):
+            payloads.extend(node.args[1:])
+        elif call == "requests.request":
+            payloads.extend(node.args[2:])
+        for payload in payloads:
+            if _expr_names(payload) & secret_names:
+                return True
+            if any(
+                _sensitive_fact_source(child, constants, aliases, callable_aliases)
+                == "named_secret_environment"
+                for child in ast.walk(payload)
+            ):
+                return True
+    return False
+
 def _fact_chain_summary(chain: _Chain) -> str:
     return " -> ".join(
         f"{fact.kind}:{fact.subtype} line {fact.line}"
@@ -2872,6 +3002,11 @@ _JS_FUNCTION_BLOCK = re.compile(
     r"(?:\bfunction\s*[A-Za-z_$]*\s*\([^)]*\)|"
     r"(?:\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>|"
     r"\b[A-Za-z_$][\w$]*\s*\([^)]*\))\s*\{"
+)
+_JS_NAMED_SECRET_READ = re.compile(
+    r"(?i)(?:process\.env(?:\.[A-Z_][A-Z0-9_]*|\[[\"'][A-Z_][A-Z0-9_]*[\"']\])|"
+    r"Deno\.env\.get\s*\(\s*[\"'][A-Z_][A-Z0-9_]*[\"']\s*\)|"
+    r"Bun\.env(?:\.[A-Z_][A-Z0-9_]*|\[[\"'][A-Z_][A-Z0-9_]*[\"']\]))"
 )
 
 
@@ -2914,10 +3049,69 @@ def _js_scope_at(ranges: list[tuple[int, int]], position: int) -> tuple[int, int
     return min(matches, key=lambda bounds: bounds[1] - bounds[0]) if matches else None
 
 
+def _js_named_secret_payload_chain(f: _File) -> _Chain | None:
+
+    if f.suffix not in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
+        return None
+    ranges = _js_function_ranges(f.text)
+    sources: dict[str, tuple[int, tuple[int, int] | None]] = {}
+    for match in _JS_VALUE_ASSIGNMENT.finditer(f.text):
+        if _JS_NAMED_SECRET_READ.search(match.group(2)):
+            sources[match.group(1)] = (
+                f.text.count("\n", 0, match.start()) + 1,
+                _js_scope_at(ranges, match.start()),
+            )
+    for match in _JS_EGRESS_CALL.finditer(f.text):
+        window = f.text[match.start():match.start() + 1600]
+        sink_scope = _js_scope_at(ranges, match.start())
+        line = f.text.count("\n", 0, match.start()) + 1
+        direct = re.search(
+            r"(?is)\b(?:body|data|json|params|files)\s*:\s*[^,};]{0,180}"
+            r"(?:process\.env|Deno\.env\.get|Bun\.env)",
+            window,
+        )
+        if direct is None:
+            direct = re.search(
+                r"(?is)^axios\.(?:post|put|patch)\s*\(\s*[^,]{1,500},\s*"
+                r"(?:\{[^}]{0,500})?(?:process\.env|Deno\.env\.get|Bun\.env)",
+                window,
+            )
+        if direct is not None:
+            return _Chain("credential_exfiltration", [
+                _Fact("sensitive_source", "named_secret_environment", f.rel,
+                      line, "(expression)", "runtime", 0.94),
+                _Fact("external_sink", "javascript_network_call", f.rel,
+                      line, "(expression)", "runtime", 0.95),
+            ], 0.94)
+        for symbol, (source_line, source_scope) in sources.items():
+            body_payload = re.search(
+                rf"(?is)\b(?:body|data|json|params|files)\s*:\s*"
+                rf"[^,}};]{{0,180}}\b{re.escape(symbol)}\b",
+                window,
+            )
+            positional_payload = re.search(
+                rf"(?is)^axios\.(?:post|put|patch)\s*\(\s*[^,]{{1,500}},\s*"
+                rf"(?:\{{[^}}]{{0,500}})?\b{re.escape(symbol)}\b",
+                window,
+            )
+            if source_scope != sink_scope or not (body_payload or positional_payload):
+                continue
+            return _Chain("credential_exfiltration", [
+                _Fact("sensitive_source", "named_secret_environment", f.rel,
+                      source_line, "(scope)", "runtime", 0.94, symbol),
+                _Fact("external_sink", "javascript_network_call", f.rel,
+                      line, "(scope)", "runtime", 0.95),
+            ], 0.94)
+    return None
+
+
 def _js_credential_chain(f: _File) -> _Chain | None:
 
     if f.suffix not in (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx"):
         return None
+    named_payload = _js_named_secret_payload_chain(f)
+    if named_payload is not None:
+        return named_payload
     ranges = _js_function_ranges(f.text)
     sources: dict[str, tuple[int, int, tuple[int, int] | None]] = {}
     for match in _JS_VALUE_ASSIGNMENT.finditer(f.text):
@@ -2973,7 +3167,9 @@ def _js_cross_file_credential_chain(
     reachable = _import_closure(entries, files)
     readers = {
         f.rel for f in reachable
-        if f.kind == "code" and _js_sensitive_expression(f.text)
+        if f.kind == "code" and (
+            _js_sensitive_expression(f.text) or _JS_NAMED_SECRET_READ.search(f.text)
+        )
     }
     senders = {
         f.rel for f in reachable
@@ -3129,26 +3325,42 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
     for f in hook_payloads:
         caps = _package_file_capabilities(f)
         chains = _package_python_fact_chains(f, "install")
-        hook_fact_chains.extend(chains)
         for chain in chains:
             if chain.name == "credential_exfiltration":
+                named_only = all(
+                    stage.kind != "sensitive_source"
+                    or stage.subtype == "named_secret_environment"
+                    for stage in chain.stages
+                )
+                transformed_secret = any(
+                    stage.kind == "transform" for stage in chain.stages
+                )
+                if named_only and not (
+                    transformed_secret or _python_named_secret_payload_egress(f)
+                ):
+                    continue
                 caps.update({"READ_ENV_SECRETS", "POST_WEB"})
                 hook_payload_named_secret = True
+                hook_fact_chains.append(chain)
             elif chain.name == "decoded_execution":
                 caps.add("EXECUTE_SOURCE_CODE")
                 hook_payload_obfuscated = f.rel
+                hook_fact_chains.append(chain)
             elif chain.name == "download_write_execute":
                 caps.update({
                     "CALL_EXTERNAL_API", "WRITE_FILE", "EXEC_SHELL",
                 })
                 hook_payload_obfuscated = f.rel
+                hook_fact_chains.append(chain)
         hook_payload_caps |= caps
         if (
             (_OBFUSCATION.search(f.text) or _zero_width_payload(f.text))
             and caps & {"EXECUTE_SOURCE_CODE", "EXEC_SHELL"}
         ):
             hook_payload_obfuscated = f.rel
-        if _ENV_NAMED_SECRET.search(f.text) and caps & _EGRESS:
+        if _python_named_secret_payload_egress(f) or (
+            _js_named_secret_payload_chain(f) is not None
+        ):
             hook_payload_named_secret = True
             hook_payload_caps.add("READ_ENV_SECRETS")
         if _silent_process(f.text):
@@ -3277,20 +3489,35 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
         js_chain = _js_credential_chain(_File(f.rel, body))
         if js_chain is not None:
             chains.append(js_chain)
-        import_fact_chains.extend(chains)
         for chain in chains:
             if chain.name == "credential_exfiltration":
+                named_only = all(
+                    stage.kind != "sensitive_source"
+                    or stage.subtype == "named_secret_environment"
+                    for stage in chain.stages
+                )
+                transformed_secret = any(
+                    stage.kind == "transform" for stage in chain.stages
+                )
+                if named_only and not (
+                    transformed_secret
+                    or
+                    _python_named_secret_payload_egress(_File(f.rel, body))
+                    or js_chain is chain
+                ):
+                    continue
                 caps.update({"READ_ENV_SECRETS", "POST_WEB"})
+                import_fact_chains.append(chain)
             elif chain.name == "decoded_execution":
                 caps.add("EXECUTE_SOURCE_CODE")
                 obfuscated_import = f.rel
+                import_fact_chains.append(chain)
             elif chain.name == "download_write_execute":
                 caps.update({
                     "CALL_EXTERNAL_API", "WRITE_FILE", "EXEC_SHELL",
                 })
                 obfuscated_import = f.rel
-        if _ENV_NAMED_SECRET.search(body) and caps & _EGRESS:
-            caps.add("READ_ENV_SECRETS")
+                import_fact_chains.append(chain)
         import_static |= caps
 
 
@@ -3416,7 +3643,18 @@ def _analyse_packages(files: list[_File], context: dict) -> dict:
                 if chain.name == "credential_exfiltration"
                 and any(
                     stage.kind == "sensitive_source"
-                    and stage.subtype not in ("named_secret_environment",)
+                    and (
+                        stage.subtype != "named_secret_environment"
+                        or _python_named_secret_payload_egress(by_rel[rel])
+                        or (
+                            js_runtime is not None
+                            and any(
+                                part.kind == "sensitive_source"
+                                and part.subtype == "named_secret_environment"
+                                for part in js_runtime.stages
+                            )
+                        )
+                    )
                     for stage in chain.stages
                 )
             ),
@@ -4018,7 +4256,17 @@ def _dangerous_build_payload(payload: _File) -> tuple[set[str], bool, bool]:
     caps = _package_file_capabilities(payload)
     fact_chains = _package_python_fact_chains(payload, "install")
     credential_theft = any(
-        chain.name == "credential_exfiltration" for chain in fact_chains
+        chain.name == "credential_exfiltration"
+        and (
+            any(
+                stage.kind == "sensitive_source"
+                and stage.subtype != "named_secret_environment"
+                for stage in chain.stages
+            )
+            or any(stage.kind == "transform" for stage in chain.stages)
+            or _python_named_secret_payload_egress(payload)
+        )
+        for chain in fact_chains
     )
     decoded_execution = any(
         chain.name in ("decoded_execution", "download_write_execute")
