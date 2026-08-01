@@ -128,10 +128,13 @@ _LLM_SCHEMA = {
                 "secret_type": {"type": "string", "maxLength": 80},
                 "package": {"type": "string", "maxLength": 160},
                 "related": {"type": "string", "maxLength": 160},
+                "evidence_for": {"type": "string", "maxLength": 300},
+                "evidence_against": {"type": "string", "maxLength": 300},
             },
             "required": [
                 "kind", "category", "severity", "title", "description", "file",
                 "line", "cwe", "capability", "secret_type", "package", "related",
+                "evidence_for", "evidence_against",
             ],
             "additionalProperties": False,
         }},
@@ -324,7 +327,12 @@ def _llm_request(report, files, context, track):
             "install_script uses an exact supplied file path. For vulnerable_dependency, "
             "related must be a concrete CVE identifier. For typosquat, related is the "
             "intended package. Report only HIGH or CRITICAL findings with an exact file "
-            "and line when the kind is vulnerability or secret. Omit uncertain findings."
+            "and line when the kind is vulnerability or secret. For every vulnerability, "
+            "evidence_for must state the concrete source-to-sink or invariant violation, "
+            "and evidence_against must state which sanitizer, guard, reachability, build, "
+            "or framework counter-hypothesis was inspected and why it does not invalidate "
+            "the finding. Never write none, N/A, or not found as counter-evidence. Omit "
+            "the finding if a concrete counter-check cannot be performed."
         )
     elif track == "skills":
         system += (
@@ -438,6 +446,17 @@ def _llm_repository_candidates(grounded, result, file_index, evidence):
                     finding["title"] + " " + finding["description"]
                 ).lower())) >= 6
                 if not re.fullmatch(r"CWE-\d{1,5}", cwe) and not descriptive:
+                    continue
+                evidence_for = str(raw.get("evidence_for") or "").strip()
+                evidence_against = str(raw.get("evidence_against") or "").strip()
+                if (
+                    len(re.findall(r"[a-z0-9]+", evidence_for.lower())) < 5
+                    or len(re.findall(r"[a-z0-9]+", evidence_against.lower())) < 4
+                    or re.fullmatch(
+                        r"(?i)(?:none|n/?a|not found|no counter(?:-?evidence)?|unknown)[.! ]*",
+                        evidence_against,
+                    )
+                ):
                     continue
             elif not str(raw.get("secret_type") or "").strip():
                 continue
@@ -933,16 +952,36 @@ def _tainted_names(lines: list[str]) -> set[str]:
     while changed:
         changed = False
         for line in lines:
+            subscript_write = re.search(
+                r"^\s*([A-Za-z_]\w*)\s*\[[^]]+\]\s*=\s*(.*)$", line
+            )
+            if subscript_write:
+                registry, write_rhs = subscript_write.groups()
+                inherited_write = any(
+                    re.search(rf"\b{re.escape(name)}\b", write_rhs)
+                    for name in tainted
+                )
+                if (
+                    SOURCE_MARKERS.search(write_rhs) or inherited_write
+                ) and registry not in tainted:
+                    tainted.add(registry)
+                    changed = True
             match = ASSIGNMENT.search(line)
             if not match:
                 continue
             rhs = line[match.end():]
+            trusted_lookup = re.search(
+                r"\b((?:trusted|allowed|permitted|approved)"
+                r"[A-Za-z0-9_]*)\s*\[",
+                rhs,
+                re.I,
+            )
             if re.search(
                 r"\b(?:secure_filename|escape_filter_chars|rawurlencode|ObjectId|"
                 r"parseInt|Number)\s*\(",
                 rhs,
                 re.I,
-            ):
+            ) or trusted_lookup and trusted_lookup.group(1) not in tainted:
                 continue
             inherited = any(re.search(rf"\b{re.escape(name)}\b", rhs) for name in tainted)
             if (SOURCE_MARKERS.search(rhs) or inherited) and match.group(1) not in tainted:
@@ -1008,6 +1047,14 @@ def _python_regions(lines: list[str], kind: str, *, top_level: bool = False) -> 
             end += 1
         out.append({
             "name": match.group(2),
+            "parameter_list": (
+                [
+                    piece.split(":", 1)[0].split("=", 1)[0].strip().lstrip("*")
+                    for piece in match.group(3).split(",")
+                    if piece.strip()
+                ]
+                if kind == "def" else []
+            ),
             "parameters": (
                 {
                     piece.split(":", 1)[0].split("=", 1)[0].strip().lstrip("*")
@@ -1036,7 +1083,15 @@ def _lexical_aliases(lines: list[str], seeds: set[str]) -> set[str]:
             if not match:
                 continue
             rhs = line[match.end():]
-            if re.search(r"\b(?:shlex\.quote|int|float|secure_filename)\s*\(", rhs):
+            if re.search(
+                r"\b(?:shlex\.quote|int|float|secure_filename|"
+                r"validate_[A-Za-z_]\w*|sanitize_[A-Za-z_]\w*)\s*\(",
+                rhs,
+            ) or re.search(r"\b(?:Path\s*\([^)]*\)|[A-Za-z_]\w*)\.name\b", rhs) \
+                    or re.search(
+                        r"\b(?:trusted|allowed|permitted|approved)"
+                        r"[A-Za-z0-9_]*\s*\[", rhs, re.I
+                    ):
                 continue
             if (
                 SOURCE_MARKERS.search(rhs)
@@ -1186,6 +1241,457 @@ def _imported_shell_surfaces(
     return calls
 
 
+_PYTHON_SURFACE_TITLES = {
+    "CWE-22": "Request-derived path reaches a file access wrapper",
+    "CWE-89": "Request-derived statement reaches a database query wrapper",
+    "CWE-95": "Request-derived code reaches a dynamic evaluation wrapper",
+    "CWE-502": "Request-derived payload reaches an unsafe deserialization wrapper",
+    "CWE-918": "Request-derived URL reaches an outbound request wrapper",
+    "CWE-1336": "Request-derived template reaches a server-side template wrapper",
+}
+
+
+def _surface_argument(text: str, call: str, argument: int) -> str:
+    match = re.search(rf"\b{call}\s*\(([^\n)]*)", text, re.I)
+    if not match:
+        return ""
+    values = [value.strip() for value in match.group(1).split(",")]
+    return values[argument] if argument < len(values) else ""
+
+
+def _surface_vulnerability_kinds(text: str, names: set[str]) -> set[str]:
+    kinds: set[str] = set()
+    rules = (
+        ("CWE-918", r"(?:requests|httpx)\.(?:get|post|put|delete|head|request)|"
+                    r"urllib\.request\.urlopen|urlopen", 0),
+        ("CWE-22", r"open|send_file|os\.(?:open|remove|unlink)|"
+                   r"Path\.(?:open|read_text|read_bytes)", 0),
+        ("CWE-502", r"(?:pickle|marshal|dill)\.loads?|jsonpickle\.decode|"
+                    r"yaml\.(?:load|unsafe_load)|joblib\.load|torch\.load", 0),
+        ("CWE-1336", r"render_template_string|Template|from_string", 0),
+        ("CWE-95", r"eval|exec|compile", 0),
+        ("CWE-89", r"(?:[A-Za-z_]\w*\.)?(?:execute|executemany|query|raw)", 0),
+    )
+    for cwe, call, argument in rules:
+        for match in re.finditer(rf"\b(?:{call})\s*\(([^\n)]*)", text, re.I):
+            values = [value.strip() for value in match.group(1).split(",")]
+            value = values[argument] if argument < len(values) else ""
+            if not _surface_uses_name(value, names):
+                continue
+            if cwe == "CWE-502" and re.search(r"\byaml\.load\s*\(", match.group(), re.I):
+                tail = match.group(1).lower().replace(" ", "")
+                if "safeloader" in tail:
+                    continue
+            kinds.add(cwe)
+    return kinds
+
+
+def _python_vulnerability_surfaces(
+    file: dict[str, Any],
+    imported: dict[str, set[tuple[str, int, str]]] | None = None,
+) -> dict[str, set[tuple[str, int]]]:
+    functions = _python_regions(file["lines"], "def", top_level=True)
+    summaries: dict[str, set[tuple[str, int]]] = {
+        function["name"]: set() for function in functions
+    }
+    for _ in range(6):
+        before = sum(len(items) for items in summaries.values())
+        for function in functions:
+            parameters = function.get("parameter_list") or []
+            for parameter_index, parameter in enumerate(parameters):
+                if parameter in ("self", "cls"):
+                    continue
+                aliases = _lexical_aliases(function["lines"], {parameter})
+                for cwe in _surface_vulnerability_kinds(function["text"], aliases):
+                    summaries[function["name"]].add((cwe, parameter_index))
+                for callee, callee_summaries in summaries.items():
+                    if not callee_summaries:
+                        continue
+                    for cwe, callee_parameter in callee_summaries:
+                        argument = _surface_argument(
+                            function["text"], re.escape(callee), callee_parameter
+                        )
+                        if argument and _surface_uses_name(argument, aliases):
+                            summaries[function["name"]].add((cwe, parameter_index))
+                for callee, callee_summaries in (imported or {}).items():
+                    for cwe, callee_parameter, _source_module in callee_summaries:
+                        argument = _surface_argument(
+                            function["text"], re.escape(callee), callee_parameter
+                        )
+                        if argument and _surface_uses_name(argument, aliases):
+                            summaries[function["name"]].add((cwe, parameter_index))
+        if sum(len(items) for items in summaries.values()) == before:
+            break
+    return {name: items for name, items in summaries.items() if items}
+
+
+def _imported_vulnerability_surfaces(
+    file: dict[str, Any], modules: dict[str, dict[str, set[tuple[str, int]]]]
+) -> dict[str, set[tuple[str, int, str]]]:
+    text = file["text"]
+    calls: dict[str, set[tuple[str, int, str]]] = {}
+
+    def add(name: str, module: str, summaries: set[tuple[str, int]]) -> None:
+        if summaries:
+            calls.setdefault(name, set()).update(
+                (cwe, parameter, module) for cwe, parameter in summaries
+            )
+
+    for match in re.finditer(
+        r"(?m)^\s*from\s+([.\w]+)\s+import\s+"
+        r"([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?",
+        text,
+    ):
+        module, name, alias = match.groups()
+        module = module.lstrip(".")
+        candidates = [module]
+        if "." not in module:
+            current = _surface_module_name(file["path"])
+            package = current.rsplit(".", 1)[0] if "." in current else ""
+            if package:
+                candidates.insert(0, f"{package}.{module}")
+        for candidate in candidates:
+            add(
+                alias or name, candidate,
+                modules.get(candidate, {}).get(name, set()),
+            )
+    for match in re.finditer(
+        r"(?m)^\s*import\s+([\w.]+)(?:\s+as\s+([A-Za-z_]\w*))?", text
+    ):
+        module, alias = match.groups()
+        for name, summaries in modules.get(module, {}).items():
+            add(f"{alias or module}.{name}", module, summaries)
+    return calls
+
+
+def _scan_vulnerability_surface_graph(repo: Repository, out: Results) -> None:
+    modules: dict[str, dict[str, set[tuple[str, int]]]] = {}
+    for file in repo.files:
+        if file["fixture"] or Path(file["path"]).suffix.lower() != ".py":
+            continue
+        module = _surface_module_name(file["path"])
+        summaries = _python_vulnerability_surfaces(file)
+        if module and summaries:
+            modules[module] = summaries
+
+    for _ in range(5):
+        before = sum(
+            len(items) for functions in modules.values()
+            for items in functions.values()
+        )
+        for file in repo.files:
+            if file["fixture"] or Path(file["path"]).suffix.lower() != ".py":
+                continue
+            module = _surface_module_name(file["path"])
+            if not module:
+                continue
+            imported = _imported_vulnerability_surfaces(file, modules)
+            summaries = _python_vulnerability_surfaces(file, imported)
+            target = modules.setdefault(module, {})
+            for name, items in summaries.items():
+                target.setdefault(name, set()).update(items)
+        after = sum(
+            len(items) for functions in modules.values()
+            for items in functions.values()
+        )
+        if after == before:
+            break
+
+    for file in repo.files:
+        if file["fixture"] or Path(file["path"]).suffix.lower() != ".py":
+            continue
+        calls = _imported_vulnerability_surfaces(file, modules)
+        if not calls:
+            continue
+        tainted = _tainted_names(file["lines"])
+        for number, line in enumerate(file["lines"], 1):
+            for call, summaries in calls.items():
+                for cwe, argument_index, source_module in summaries:
+                    argument = _surface_argument(line, re.escape(call), argument_index)
+                    if argument and _surface_uses_name(argument, tainted):
+                        before = len(out.vulnerabilities)
+                        out.vulnerability(
+                            file["path"], number, cwe, _PYTHON_SURFACE_TITLES[cwe]
+                        )
+                        if len(out.vulnerabilities) > before:
+                            out.vulnerabilities[-1]["_wrapper_module"] = source_module
+                            out.vulnerabilities[-1]["trace"] = {
+                                "entrypoint_file": file["path"],
+                                "wrapper": call,
+                                "sink_module": source_module,
+                            }
+
+    reached = {
+        (str(item.get("_wrapper_module") or ""), item["cwe"])
+        for item in out.vulnerabilities if item.get("_wrapper_module")
+    }
+    compacted = []
+    for item in out.vulnerabilities:
+        module = _surface_module_name(item["file"])
+        if not item.get("_wrapper_module") and (module, item["cwe"]) in reached:
+            continue
+        item.pop("_wrapper_module", None)
+        compacted.append(item)
+    out.vulnerabilities[:] = compacted
+
+
+_SCRIPT_SUFFIXES = (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
+_SCRIPT_SURFACE_TITLES = {
+    "CWE-22": "Request-derived path reaches a JavaScript file wrapper",
+    "CWE-78": "Request-derived command reaches a JavaScript process wrapper",
+    "CWE-89": "Request-derived statement reaches a JavaScript query wrapper",
+    "CWE-95": "Request-derived code reaches a JavaScript evaluation wrapper",
+    "CWE-918": "Request-derived URL reaches a JavaScript network wrapper",
+    "CWE-1336": "Request-derived template reaches a JavaScript template wrapper",
+}
+
+
+def _script_module_name(path: str) -> str:
+    value = _normal_path(path)
+    for suffix in _SCRIPT_SUFFIXES:
+        if value.lower().endswith(suffix):
+            value = value[:-len(suffix)]
+            break
+    return value[:-6] if value.endswith("/index") else value
+
+
+def _script_resolve_module(current: str, specifier: str, modules: dict) -> str:
+    value = specifier.replace("\\", "/")
+    if not value.startswith("."):
+        return value if value in modules else ""
+    parts = current.split("/")[:-1]
+    for part in value.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+        else:
+            parts.append(part)
+    candidate = "/".join(parts)
+    for suffix in _SCRIPT_SUFFIXES:
+        if candidate.lower().endswith(suffix):
+            candidate = candidate[:-len(suffix)]
+            break
+    if candidate in modules:
+        return candidate
+    return candidate + "/index" if candidate + "/index" in modules else ""
+
+
+def _script_regions(lines: list[str]) -> list[dict]:
+    marker = re.compile(
+        r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)"
+        r"\s*\(([^)]*)\)[^{]*\{|"
+        r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)"
+        r"(?:\s*:[^=]+)?\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>\s*\{"
+    )
+    out: list[dict] = []
+    for start, line in enumerate(lines):
+        match = marker.match(line)
+        if not match:
+            continue
+        name = match.group(1) or match.group(3)
+        raw_parameters = match.group(2) if match.group(1) else match.group(4)
+        parameters = [
+            value.strip().lstrip("...").split(":", 1)[0].split("=", 1)[0].strip()
+            for value in raw_parameters.split(",") if value.strip()
+        ]
+        depth = 0
+        end = start
+        seen = False
+        while end < len(lines):
+            depth += lines[end].count("{") - lines[end].count("}")
+            seen |= "{" in lines[end]
+            end += 1
+            if seen and depth <= 0:
+                break
+        region = lines[start:end]
+        out.append({
+            "name": name, "parameters": parameters,
+            "lines": region, "text": "\n".join(region),
+        })
+    return out
+
+
+def _script_parameter_aliases(lines: list[str], seed: str) -> set[str]:
+    names = {seed}
+    assignment = re.compile(
+        r"^\s*(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)"
+        r"(?:\s*:[^=]+)?\s*=\s*(.+?);?\s*$"
+    )
+    for _ in range(5):
+        before = len(names)
+        for line in lines:
+            match = assignment.match(line)
+            if not match:
+                continue
+            rhs = match.group(2)
+            if re.search(
+                r"\b(?:Number|Boolean|parseInt|parseFloat|encodeURIComponent|"
+                r"path\.basename|sanitize\w*|validate\w*)\s*\(", rhs, re.I
+            ):
+                continue
+            if _surface_uses_name(rhs, names):
+                names.add(match.group(1))
+        if len(names) == before:
+            break
+    return names
+
+
+def _script_surface_cwes(text: str, names: set[str]) -> set[str]:
+    rules = (
+        ("CWE-78", r"(?:child_process\.)?(?:exec|execSync)"),
+        ("CWE-95", r"(?:eval|Function)"),
+        ("CWE-89", r"(?:[A-Za-z_$][\w$]*\.)?(?:query|execute|raw)"),
+        ("CWE-918", r"fetch|axios\.(?:get|post|put|delete)|(?:got|request)"),
+        ("CWE-22", r"(?:fs\.)?(?:readFile|readFileSync|createReadStream|sendFile|unlink|rm)"),
+        ("CWE-1336", r"Handlebars\.compile|ejs\.render|nunjucks\.renderString"),
+    )
+    out: set[str] = set()
+    for cwe, call in rules:
+        for match in re.finditer(rf"\b(?:{call})\s*\(([^\n)]*)", text, re.I):
+            argument = match.group(1).split(",", 1)[0]
+            if _surface_uses_name(argument, names):
+                out.add(cwe)
+    return out
+
+
+def _script_imported_surfaces(
+    file: dict[str, Any], modules: dict[str, dict[str, set[tuple[str, int]]]]
+) -> dict[str, set[tuple[str, int, str]]]:
+    current = _script_module_name(file["path"])
+    out: dict[str, set[tuple[str, int, str]]] = {}
+
+    def add(call: str, module: str, name: str) -> None:
+        values = modules.get(module, {}).get(name, set())
+        if values:
+            out.setdefault(call, set()).update(
+                (cwe, index, module) for cwe, index in values
+            )
+
+    text = file["text"]
+    for match in re.finditer(
+        r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\s*\(\s*"
+        r"[\"']([^\"']+)[\"']\s*\)", text
+    ):
+        module = _script_resolve_module(current, match.group(2), modules)
+        for item in match.group(1).split(","):
+            parts = [part.strip() for part in item.strip().split(":", 1)]
+            if parts and module:
+                add(parts[-1], module, parts[0])
+    for match in re.finditer(
+        r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*"
+        r"[\"']([^\"']+)[\"']\s*\)", text
+    ):
+        alias = match.group(1)
+        module = _script_resolve_module(current, match.group(2), modules)
+        for name in modules.get(module, {}):
+            add(f"{alias}.{name}", module, name)
+    for match in re.finditer(
+        r"import\s*\{([^}]+)\}\s*from\s*[\"']([^\"']+)[\"']", text
+    ):
+        module = _script_resolve_module(current, match.group(2), modules)
+        for item in match.group(1).split(","):
+            parts = re.split(r"\s+as\s+", item.strip())
+            if parts and module:
+                add(parts[-1], module, parts[0])
+    for match in re.finditer(
+        r"import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s*"
+        r"[\"']([^\"']+)[\"']", text
+    ):
+        alias = match.group(1)
+        module = _script_resolve_module(current, match.group(2), modules)
+        for name in modules.get(module, {}):
+            add(f"{alias}.{name}", module, name)
+    return out
+
+
+def _script_vulnerability_surfaces(
+    file: dict[str, Any],
+    imported: dict[str, set[tuple[str, int, str]]] | None = None,
+) -> dict[str, set[tuple[str, int]]]:
+    regions = _script_regions(file["lines"])
+    summaries = {region["name"]: set() for region in regions}
+    for _ in range(6):
+        before = sum(len(items) for items in summaries.values())
+        for region in regions:
+            for parameter_index, parameter in enumerate(region["parameters"]):
+                names = _script_parameter_aliases(region["lines"], parameter)
+                for cwe in _script_surface_cwes(region["text"], names):
+                    summaries[region["name"]].add((cwe, parameter_index))
+                for callee, values in summaries.items():
+                    for cwe, callee_index in values:
+                        argument = _surface_argument(
+                            region["text"], re.escape(callee), callee_index
+                        )
+                        if argument and _surface_uses_name(argument, names):
+                            summaries[region["name"]].add((cwe, parameter_index))
+                for callee, values in (imported or {}).items():
+                    for cwe, callee_index, _module in values:
+                        argument = _surface_argument(
+                            region["text"], re.escape(callee), callee_index
+                        )
+                        if argument and _surface_uses_name(argument, names):
+                            summaries[region["name"]].add((cwe, parameter_index))
+        if sum(len(items) for items in summaries.values()) == before:
+            break
+    return {name: items for name, items in summaries.items() if items}
+
+
+def _scan_script_surface_graph(repo: Repository, out: Results) -> None:
+    modules: dict[str, dict[str, set[tuple[str, int]]]] = {}
+    sources = [
+        file for file in repo.files
+        if not file["fixture"] and Path(file["path"]).suffix.lower() in _SCRIPT_SUFFIXES
+    ]
+    for file in sources:
+        module = _script_module_name(file["path"])
+        summaries = _script_vulnerability_surfaces(file)
+        if summaries:
+            modules[module] = summaries
+    for _ in range(5):
+        before = sum(len(v) for funcs in modules.values() for v in funcs.values())
+        for file in sources:
+            module = _script_module_name(file["path"])
+            imported = _script_imported_surfaces(file, modules)
+            target = modules.setdefault(module, {})
+            for name, values in _script_vulnerability_surfaces(file, imported).items():
+                target.setdefault(name, set()).update(values)
+        after = sum(len(v) for funcs in modules.values() for v in funcs.values())
+        if after == before:
+            break
+
+    reached: set[tuple[str, str]] = set()
+    for file in sources:
+        calls = _script_imported_surfaces(file, modules)
+        tainted = _tainted_names(file["lines"])
+        for line_number, line in enumerate(file["lines"], 1):
+            for call, values in calls.items():
+                for cwe, parameter_index, source_module in values:
+                    argument = _surface_argument(line, re.escape(call), parameter_index)
+                    if not argument or not _surface_uses_name(argument, tainted):
+                        continue
+                    before = len(out.vulnerabilities)
+                    out.vulnerability(
+                        file["path"], line_number, cwe,
+                        _SCRIPT_SURFACE_TITLES[cwe],
+                    )
+                    if len(out.vulnerabilities) > before:
+                        out.vulnerabilities[-1]["trace"] = {
+                            "entrypoint_file": file["path"],
+                            "wrapper": call,
+                            "sink_module": source_module,
+                        }
+                    reached.add((source_module, cwe))
+    out.vulnerabilities[:] = [
+        item for item in out.vulnerabilities
+        if not (
+            (_script_module_name(item["file"]), item["cwe"]) in reached
+            and not item.get("trace")
+        )
+    ]
+
+
 def _scan_shell_surface_graph(repo: Repository, out: Results) -> None:
 
     modules: dict[str, set[str]] = {}
@@ -1267,13 +1773,41 @@ def _scan_workflows(file: dict[str, Any], out: Results) -> None:
     low_path = path.lower()
     if low_path.startswith(".github/workflows/"):
         github_script = "actions/github-script@" in text
+        untrusted = re.compile(
+            r"\$\{\{\s*(?:github\.(?:head_ref|event\.(?:"
+            r"pull_request\.(?:title|body|head\.(?:ref|sha))|"
+            r"issue\.(?:title|body)|comment\.body|review\.body|"
+            r"review_comment\.body|commits|head_commit\.message)))",
+            re.I,
+        )
         for number, line in enumerate(lines, 1):
-            if "${{ github.event." not in line:
+            if not untrusted.search(line):
                 continue
             if re.search(r"\brun\s*:", line):
                 out.vulnerability(path, number, "CWE-78", "GitHub event expression is interpolated into a shell command")
             elif github_script and not re.search(r"^\s*[A-Z_][A-Z0-9_]*\s*:", line):
                 out.vulnerability(path, number, "CWE-95", "GitHub event expression is interpolated into JavaScript")
+        index = 0
+        while index < len(lines):
+            marker = re.match(r"^(\s*)(?:-\s+)?run\s*:\s*[>|]", lines[index])
+            if not marker:
+                index += 1
+                continue
+            parent_indent = len(marker.group(1).expandtabs(8))
+            cursor = index + 1
+            while cursor < len(lines):
+                candidate = lines[cursor]
+                if candidate.strip():
+                    indent = len(candidate) - len(candidate.lstrip(" \t"))
+                    if indent <= parent_indent:
+                        break
+                    if untrusted.search(candidate):
+                        out.vulnerability(
+                            path, cursor + 1, "CWE-78",
+                            "GitHub event expression is interpolated into a shell command",
+                        )
+                cursor += 1
+            index = max(cursor, index + 1)
         if "pull_request_target" in text and "pull_request.head" in text:
             line = _first_line(lines, r"pull_request\.head")
             out.vulnerability(path, line, "CWE-829", "Privileged workflow checks out untrusted pull-request head")
@@ -1405,6 +1939,11 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
                 and _argument_is_tainted(line, r"open", tainted)
             ):
                 out.vulnerability(path, number, "CWE-22", "File access uses a request-controlled path")
+            if (
+                re.search(r"\bsend_file\s*\(", line, re.I)
+                and _argument_is_tainted(line, r"send_file", tainted)
+            ):
+                out.vulnerability(path, number, "CWE-22", "File download uses a request-controlled path")
             if re.search(r"\bopen\s*\(", line) and re.search(r"\bROOT\s*\+\s*[\"']/[\"']\s*\+", line):
                 out.vulnerability(path, number, "CWE-22", "File path is concatenated from an unvalidated name")
             if "render_template_string(" in line and (
@@ -1510,6 +2049,36 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
 
 
     if suffix == ".py":
+        dynamic_classes: set[str] = set()
+        for match in re.finditer(
+            r"(?m)^\s*([A-Za-z_]\w*)\s*=\s*"
+            r"((?:[A-Za-z_]\w*\.)*[A-Za-z_]\w*)\s*\[\s*([A-Za-z_]\w*)\s*\]",
+            text,
+        ):
+            target, registry, selector = match.groups()
+            if (
+                selector not in tainted
+                or not re.search(
+                    r"(?i)(?:model|factory|plugin|handler|registry|provider|backend)",
+                    registry,
+                )
+                or re.search(
+                    rf"(?m)^\s*if\s+{re.escape(selector)}\s+not\s+in\s+"
+                    r"(?:ALLOWED|TRUSTED|PERMITTED|APPROVED)[A-Za-z0-9_]*\s*:"
+                    r"(?:\n[ \t]+(?:abort\s*\(|raise\b|return\b))",
+                    text,
+                    re.I,
+                )
+            ):
+                continue
+            dynamic_classes.add(target)
+        for target in dynamic_classes:
+            call = re.search(rf"(?m)^\s*(?:return\s+)?{re.escape(target)}\s*\(", text)
+            if call:
+                out.vulnerability(
+                    path, _line_number(text, call.start()), "CWE-94",
+                    "Request input selects the instantiated model or provider class",
+                )
         for match in re.finditer(
             r"(?m)^\s*(\w+)\s*=\s*(?:f[\"'][^\n]*(?:select|insert|update|delete)"
             r"|[\"'][^\n]*(?:select|insert|update|delete)[^\n]*(?:%|\.format\())",
@@ -1573,8 +2142,13 @@ def _scan_code(file: dict[str, Any], out: Results, readme: str) -> None:
 
 SECRET_RULES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("aws_access_key_id", re.compile(r"\bAKIA[0-9A-Z]{16}\b")),
+    ("aws_secret_access_key", re.compile(
+        r"(?i)aws.{0,20}secret.{0,24}[\"'][A-Za-z0-9/+=]{40}[\"']")),
     ("github_token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,255}\b")),
+    ("github_token", re.compile(
+        r"\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59}\b")),
     ("gitlab_token", re.compile(r"\bglpat-[A-Za-z0-9_-]{20}\b")),
+    ("slack_token", re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,48}\b")),
     ("npm_token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
     ("huggingface_token", re.compile(r"\bhf_[A-Za-z0-9]{30,}\b")),
     ("stripe_secret_key", re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{10,}\b")),
@@ -1871,6 +2445,8 @@ def _report(repo: Repository) -> dict[str, Any]:
     for file in repo.files:
         _scan_code(file, out, readme)
     _scan_shell_surface_graph(repo, out)
+    _scan_vulnerability_surface_graph(repo, out)
+    _scan_script_surface_graph(repo, out)
     _scan_secrets(repo, out)
     _supply_chain(repo, out)
     risky_dependency = any(dependency["cve"] for dependency in out.dependencies)

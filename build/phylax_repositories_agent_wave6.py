@@ -135,10 +135,13 @@ _LLM_SCHEMA = {
                 "secret_type": {"type": "string", "maxLength": 80},
                 "package": {"type": "string", "maxLength": 160},
                 "related": {"type": "string", "maxLength": 160},
+                "evidence_for": {"type": "string", "maxLength": 300},
+                "evidence_against": {"type": "string", "maxLength": 300},
             },
             "required": [
                 "kind", "category", "severity", "title", "description", "file",
                 "line", "cwe", "capability", "secret_type", "package", "related",
+                "evidence_for", "evidence_against",
             ],
             "additionalProperties": False,
         }},
@@ -331,7 +334,12 @@ def _llm_request(report, files, context, track):
             "install_script uses an exact supplied file path. For vulnerable_dependency, "
             "related must be a concrete CVE identifier. For typosquat, related is the "
             "intended package. Report only HIGH or CRITICAL findings with an exact file "
-            "and line when the kind is vulnerability or secret. Omit uncertain findings."
+            "and line when the kind is vulnerability or secret. For every vulnerability, "
+            "evidence_for must state the concrete source-to-sink or invariant violation, "
+            "and evidence_against must state which sanitizer, guard, reachability, build, "
+            "or framework counter-hypothesis was inspected and why it does not invalidate "
+            "the finding. Never write none, N/A, or not found as counter-evidence. Omit "
+            "the finding if a concrete counter-check cannot be performed."
         )
     elif track == "skills":
         system += (
@@ -445,6 +453,17 @@ def _llm_repository_candidates(grounded, result, file_index, evidence):
                     finding["title"] + " " + finding["description"]
                 ).lower())) >= 6
                 if not re.fullmatch(r"CWE-\d{1,5}", cwe) and not descriptive:
+                    continue
+                evidence_for = str(raw.get("evidence_for") or "").strip()
+                evidence_against = str(raw.get("evidence_against") or "").strip()
+                if (
+                    len(re.findall(r"[a-z0-9]+", evidence_for.lower())) < 5
+                    or len(re.findall(r"[a-z0-9]+", evidence_against.lower())) < 4
+                    or re.fullmatch(
+                        r"(?i)(?:none|n/?a|not found|no counter(?:-?evidence)?|unknown)[.! ]*",
+                        evidence_against,
+                    )
+                ):
                     continue
             elif not str(raw.get("secret_type") or "").strip():
                 continue
@@ -2395,6 +2414,16 @@ def _repository_expr_uses_taint(node, tainted: set[str], guarded: set[str]) -> b
         with contextlib.suppress(ValueError, TypeError):
             ast.literal_eval(node.value)
             return False
+    if (
+        isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id not in tainted
+        and re.search(
+            r"(?i)^(?:trusted|allowed|permitted|approved)[A-Za-z0-9_]*$",
+            node.value.id,
+        )
+    ):
+        return False
     if isinstance(node, ast.Call):
         call = _python_call_path(node.func)
 
@@ -2405,6 +2434,13 @@ def _repository_expr_uses_taint(node, tainted: set[str], guarded: set[str]) -> b
             "werkzeug.utils.secure_filename", "secure_filename",
         ):
             return False
+    if (
+        isinstance(node, ast.Attribute)
+        and node.attr in ("name", "basename")
+        and isinstance(node.value, ast.Call)
+        and _python_call_path(node.value.func) in ("Path", "pathlib.Path")
+    ):
+        return False
     if _repository_python_source(node):
         return True
     return any(
@@ -2436,6 +2472,73 @@ def _repository_python_guards(node, parameters: set[str]) -> set[str]:
         ):
             guarded.add(left.value.id)
     return guarded
+
+def _python_dynamic_factory_vulnerabilities(
+    f: _File, nodes: list, tainted: set[str], guarded: set[str]
+) -> list[dict]:
+    selected_classes: set[str] = set()
+    for node in nodes:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = node.value
+        targets = list(node.targets) if isinstance(node, ast.Assign) else [node.target]
+        if not isinstance(value, ast.Subscript):
+            continue
+        registry = _python_call_path(value.value)
+        if not re.search(
+            r"(?i)(?:model|factory|plugin|handler|registry|provider|backend)",
+            registry,
+        ) or not _repository_expr_uses_taint(value.slice, tainted, guarded):
+            continue
+        for target in targets:
+            selected_classes |= _assigned_names(target)
+
+    if not selected_classes:
+        return []
+    for node in sorted(nodes, key=lambda item: getattr(item, "lineno", 0)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in selected_classes
+        ):
+            return [_repository_vulnerability(
+                f, getattr(node, "lineno", 1), "CWE-94",
+                "Request input selects the instantiated model or provider class",
+                "HIGH",
+                "Map an allow-listed identifier to a fixed set of implementation classes.",
+            )]
+    return []
+
+def _python_rejected_selectors(node, selectors: set[str]) -> set[str]:
+    rejected: set[str] = set()
+    for child in ast.walk(node):
+        if not isinstance(child, ast.If) or not isinstance(child.test, ast.Compare):
+            continue
+        test = child.test
+        if (
+            not isinstance(test.left, ast.Name)
+            or test.left.id not in selectors
+            or not any(isinstance(op, ast.NotIn) for op in test.ops)
+            or not any(
+                isinstance(body_node, (ast.Raise, ast.Return))
+                or isinstance(body_node, ast.Call)
+                and _python_call_path(body_node.func) in ("abort", "flask.abort")
+                for statement in child.body
+                for body_node in ast.walk(statement)
+            )
+        ):
+            continue
+        if any(
+            isinstance(comparator, (ast.Set, ast.List, ast.Tuple))
+            or isinstance(comparator, ast.Name)
+            and re.search(
+                r"(?i)(?:allow|trusted|permitted|approved|valid)",
+                comparator.id,
+            )
+            for comparator in test.comparators
+        ):
+            rejected.add(test.left.id)
+    return rejected
 
 _PY_PROCESS_CALLS = frozenset({
     "subprocess.run", "subprocess.call", "subprocess.check_call",
@@ -2741,8 +2844,222 @@ def _python_imported_shell_wrappers(
                         )
     return imported
 
+
+_PYTHON_WRAPPER_DETAILS = {
+    "CWE-22": (
+        "Request-derived path reaches a file access wrapper",
+        "Resolve the path under a fixed root and reject paths that escape it.",
+    ),
+    "CWE-89": (
+        "Request-derived statement reaches a database query wrapper",
+        "Use parameterised queries with placeholders.",
+    ),
+    "CWE-95": (
+        "Request-derived code reaches a dynamic evaluation wrapper",
+        "Remove dynamic evaluation and dispatch through explicit operations.",
+    ),
+    "CWE-502": (
+        "Request-derived payload reaches an unsafe deserialization wrapper",
+        "Use a non-executable format with schema validation.",
+    ),
+    "CWE-918": (
+        "Request-derived URL reaches an outbound request wrapper",
+        "Allow-list schemes and hosts and reject private or link-local destinations.",
+    ),
+    "CWE-1336": (
+        "Request-derived template reaches a server-side template wrapper",
+        "Render a fixed template and pass request values only as data.",
+    ),
+}
+
+
+def _python_direct_wrapper_cwes(
+    node: ast.Call, tainted: set[str], guarded: set[str]
+) -> set[str]:
+    call = _python_call_path(node.func)
+    positional = [
+        _repository_expr_uses_taint(arg, tainted, guarded) for arg in node.args
+    ]
+    keyword = {
+        str(item.arg or ""): _repository_expr_uses_taint(
+            item.value, tainted, guarded
+        )
+        for item in node.keywords
+    }
+    first = bool(positional and positional[0])
+    out: set[str] = set()
+    if (
+        call in (
+            "requests.get", "requests.post", "requests.put", "requests.delete",
+            "requests.head", "requests.request", "httpx.get", "httpx.post",
+            "httpx.request", "aiohttp.request", "urllib.request.urlopen", "urlopen",
+        )
+        or call.endswith((".request.get", ".request.post"))
+    ) and (first or keyword.get("url", False) or keyword.get("uri", False)):
+        out.add("CWE-918")
+    if call in (
+        "open", "send_file", "os.open", "os.remove", "os.unlink",
+        "shutil.rmtree", "Path.open", "Path.read_text", "Path.read_bytes",
+    ) and first:
+        out.add("CWE-22")
+    if (
+        call in (
+            "pickle.load", "pickle.loads", "marshal.loads", "dill.load",
+            "dill.loads", "jsonpickle.decode", "yaml.unsafe_load",
+            "joblib.load", "torch.load",
+        )
+        or call == "yaml.load" and not any(
+            item.arg in ("Loader", "loader")
+            and "SafeLoader" in ast.unparse(item.value)
+            for item in node.keywords
+        )
+    ) and first:
+        out.add("CWE-502")
+    if call.rsplit(".", 1)[-1] in (
+        "render_template_string", "Template", "from_string",
+    ) and first:
+        out.add("CWE-1336")
+    if call in ("eval", "exec", "compile") and first:
+        out.add("CWE-95")
+    if (
+        call.rsplit(".", 1)[-1] in (
+            "execute", "executemany", "raw", "query", "queryRaw",
+        )
+        or call.endswith(".query")
+    ) and (
+        first
+        or keyword.get("query", False)
+        or keyword.get("sql", False)
+        or keyword.get("statement", False)
+    ):
+        out.add("CWE-89")
+    return out
+
+
+def _python_vulnerability_wrapper_summaries(
+    tree,
+    imported: dict[str, set[tuple[str, int, str]]] | None = None,
+) -> dict[str, set[tuple[str, int]]]:
+    functions = [
+        node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    summaries: dict[str, set[tuple[str, int]]] = {
+        function.name: set() for function in functions
+    }
+    for _ in range(6):
+        before = sum(len(items) for items in summaries.values())
+        for function in functions:
+            parameters = [
+                arg.arg for arg in (
+                    list(function.args.posonlyargs) + list(function.args.args)
+                    + list(function.args.kwonlyargs)
+                )
+            ]
+            nodes = _function_body_nodes(function)
+            for parameter_index, parameter in enumerate(parameters):
+                if parameter in ("self", "cls"):
+                    continue
+                tainted = {parameter}
+                guarded = _repository_python_guards(function, {parameter})
+                for _pass in range(5):
+                    previous = len(tainted)
+                    for child in nodes:
+                        value = None
+                        targets: list = []
+                        if isinstance(child, ast.Assign):
+                            value, targets = child.value, list(child.targets)
+                        elif isinstance(child, ast.AnnAssign):
+                            value, targets = child.value, [child.target]
+                        elif isinstance(child, ast.NamedExpr):
+                            value, targets = child.value, [child.target]
+                        elif isinstance(child, ast.AugAssign):
+                            value, targets = child.value, [child.target]
+                        if value is not None and _repository_expr_uses_taint(
+                            value, tainted, guarded
+                        ):
+                            for target in targets:
+                                tainted |= _assigned_names(target)
+                    if len(tainted) == previous:
+                        break
+                for child in nodes:
+                    if not isinstance(child, ast.Call):
+                        continue
+                    for cwe in _python_direct_wrapper_cwes(child, tainted, guarded):
+                        summaries[function.name].add((cwe, parameter_index))
+                    callee = _python_call_path(child.func)
+                    for cwe, callee_parameter in summaries.get(callee, set()):
+                        if (
+                            callee_parameter < len(child.args)
+                            and _repository_expr_uses_taint(
+                                child.args[callee_parameter], tainted, guarded
+                            )
+                        ):
+                            summaries[function.name].add((cwe, parameter_index))
+                    for cwe, callee_parameter, _source_module in (
+                        imported or {}
+                    ).get(callee, set()):
+                        if (
+                            callee_parameter < len(child.args)
+                            and _repository_expr_uses_taint(
+                                child.args[callee_parameter], tainted, guarded
+                            )
+                        ):
+                            summaries[function.name].add((cwe, parameter_index))
+        if sum(len(items) for items in summaries.values()) == before:
+            break
+    return {name: items for name, items in summaries.items() if items}
+
+
+def _python_imported_vulnerability_wrappers(
+    f: _File,
+    module_wrappers: dict[str, dict[str, set[tuple[str, int]]]],
+) -> dict[str, set[tuple[str, int, str]]]:
+    try:
+        tree = ast.parse(f.text)
+    except (SyntaxError, ValueError):
+        return {}
+    current = _python_module_name(f.rel)
+    package = current.rsplit(".", 1)[0] if "." in current else ""
+    imported: dict[str, set[tuple[str, int, str]]] = {}
+
+    def add(name: str, module: str, values: set[tuple[str, int]]) -> None:
+        if values:
+            imported.setdefault(name, set()).update(
+                (cwe, parameter, module) for cwe, parameter in values
+            )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                prefix = alias.asname or alias.name
+                for name, values in module_wrappers.get(alias.name, {}).items():
+                    add(f"{prefix}.{name}", alias.name, values)
+        elif isinstance(node, ast.ImportFrom):
+            module = str(node.module or "")
+            if node.level:
+                parts = package.split(".") if package else []
+                keep = max(0, len(parts) - (node.level - 1))
+                prefix = ".".join(parts[:keep])
+                module = ".".join(part for part in (prefix, module) if part)
+            wrappers = module_wrappers.get(module, {})
+            for alias in node.names:
+                if alias.name in wrappers:
+                    add(alias.asname or alias.name, module, wrappers[alias.name])
+                elif not node.module:
+                    submodule = ".".join(
+                        part for part in (module, alias.name) if part
+                    )
+                    for name, values in module_wrappers.get(submodule, {}).items():
+                        add(f"{alias.asname or alias.name}.{name}", submodule, values)
+    return imported
+
 def _python_repository_vulnerabilities(
-    f: _File, imported_shell_wrappers: set[str] | None = None
+    f: _File,
+    imported_shell_wrappers: set[str] | None = None,
+    imported_vulnerability_wrappers: dict[
+        str, set[tuple[str, int, str]]
+    ] | None = None,
 ) -> list[dict]:
 
 
@@ -2802,8 +3119,18 @@ def _python_repository_vulnerabilities(
                 if value is not None and _repository_expr_uses_taint(value, tainted, guarded):
                     for target in targets:
                         tainted |= _assigned_names(target)
+                        if (
+                            isinstance(target, ast.Subscript)
+                            and isinstance(target.value, ast.Name)
+                        ):
+                            tainted.add(target.value.id)
             if len(tainted) == before:
                 break
+
+        dynamic_guards = _python_rejected_selectors(fn, tainted)
+        out.extend(_python_dynamic_factory_vulnerabilities(
+            f, nodes, tainted, guarded | dynamic_guards
+        ))
 
         out.extend(_python_compile_execute_vulnerabilities(
             f, nodes, tainted, guarded
@@ -2833,6 +3160,23 @@ def _python_repository_vulnerabilities(
                 and kw.value.value is True
                 for kw in child.keywords
             )
+
+            for cwe, parameter_index, source_module in (
+                imported_vulnerability_wrappers or {}
+            ).get(call, set()):
+                if parameter_index >= len(positional_taint) or not positional_taint[parameter_index]:
+                    continue
+                title, remediation = _PYTHON_WRAPPER_DETAILS[cwe]
+                finding = _repository_vulnerability(
+                    f, line, cwe, title, "HIGH", remediation
+                )
+                finding["_wrapper_module"] = source_module
+                finding["trace"] = {
+                    "entrypoint_file": f.rel,
+                    "wrapper": call,
+                    "sink_module": source_module,
+                }
+                out.append(finding)
 
             if (
                 call in (
@@ -2994,8 +3338,11 @@ def _python_repository_vulnerabilities(
                     "Use a fixed XPath expression with bound variables.",
                 ))
             elif (
-                call.rsplit(".", 1)[-1] in (
-                    "search_s", "search_ext_s", "search", "search_ext",
+                (
+                    call.rsplit(".", 1)[-1] in (
+                        "search_s", "search_ext_s",
+                    )
+                    or call.startswith("ldap.")
                 )
                 and any(positional_taint[1:])
             ):
@@ -3119,6 +3466,274 @@ def _script_repository_vulnerabilities(f: _File) -> list[dict]:
                 f, index + 1, cwe, title, "HIGH", remediation
             ))
             break
+    return out
+
+
+_JS_SUFFIXES = (".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx")
+_JS_WRAPPER_DETAILS = {
+    "CWE-22": ("Request-derived path reaches a JavaScript file wrapper",
+               "Resolve the path under a fixed root and reject escapes."),
+    "CWE-78": ("Request-derived command reaches a JavaScript process wrapper",
+               "Use a fixed executable and argument vector without a shell."),
+    "CWE-89": ("Request-derived statement reaches a JavaScript query wrapper",
+               "Use bound query parameters."),
+    "CWE-95": ("Request-derived code reaches a JavaScript evaluation wrapper",
+               "Replace dynamic evaluation with explicit dispatch."),
+    "CWE-918": ("Request-derived URL reaches a JavaScript network wrapper",
+                "Allow-list schemes, hosts, and resolved addresses."),
+    "CWE-1336": ("Request-derived template reaches a JavaScript template wrapper",
+                 "Compile only fixed templates and pass request values as data."),
+}
+
+
+def _js_module_name(rel: str) -> str:
+    value = rel.replace("\\", "/")
+    for suffix in _JS_SUFFIXES:
+        if value.lower().endswith(suffix):
+            value = value[:-len(suffix)]
+            break
+    return value[:-6] if value.endswith("/index") else value
+
+
+def _js_resolve(current: str, specifier: str, modules: dict) -> str:
+    value = specifier.replace("\\", "/")
+    if not value.startswith("."):
+        return value if value in modules else ""
+    parts = current.split("/")[:-1]
+    for part in value.split("/"):
+        if part in ("", "."):
+            continue
+        if part == "..":
+            if parts:
+                parts.pop()
+        else:
+            parts.append(part)
+    candidate = "/".join(parts)
+    for suffix in _JS_SUFFIXES:
+        if candidate.lower().endswith(suffix):
+            candidate = candidate[:-len(suffix)]
+            break
+    if candidate in modules:
+        return candidate
+    return candidate + "/index" if candidate + "/index" in modules else ""
+
+
+def _js_regions(f: _File) -> list[tuple[str, list[str], list[str], str]]:
+    marker = re.compile(
+        r"^\s*(?:export\s+)?(?:async\s+)?function\s+([A-Za-z_$][\w$]*)"
+        r"\s*\(([^)]*)\)[^{]*\{|"
+        r"^\s*(?:export\s+)?(?:const|let|var)\s+([A-Za-z_$][\w$]*)"
+        r"(?:\s*:[^=]+)?\s*=\s*(?:async\s*)?\(([^)]*)\)\s*=>\s*\{"
+    )
+    out = []
+    for start, line in enumerate(f.lines):
+        match = marker.match(line)
+        if not match:
+            continue
+        name = match.group(1) or match.group(3)
+        raw = match.group(2) if match.group(1) else match.group(4)
+        parameters = [
+            item.strip().lstrip("...").split(":", 1)[0].split("=", 1)[0].strip()
+            for item in raw.split(",") if item.strip()
+        ]
+        depth, end, seen = 0, start, False
+        while end < len(f.lines):
+            depth += f.lines[end].count("{") - f.lines[end].count("}")
+            seen |= "{" in f.lines[end]
+            end += 1
+            if seen and depth <= 0:
+                break
+        lines = f.lines[start:end]
+        out.append((name, parameters, lines, "\n".join(lines)))
+    return out
+
+
+def _js_aliases(lines: list[str], seed: str) -> set[str]:
+    names = {seed}
+    assignment = re.compile(
+        r"^\s*(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)"
+        r"(?:\s*:[^=]+)?\s*=\s*(.+?);?\s*$"
+    )
+    for _ in range(5):
+        before = len(names)
+        for line in lines:
+            match = assignment.match(line)
+            if not match:
+                continue
+            rhs = match.group(2)
+            if re.search(
+                r"\b(?:Number|Boolean|parseInt|parseFloat|encodeURIComponent|"
+                r"path\.basename|sanitize\w*|validate\w*)\s*\(", rhs, re.I
+            ):
+                continue
+            if any(re.search(rf"(?<![\w$]){re.escape(name)}(?![\w$])", rhs)
+                   for name in names):
+                names.add(match.group(1))
+        if len(names) == before:
+            break
+    return names
+
+
+def _js_uses(text: str, names: set[str]) -> bool:
+    return any(
+        re.search(rf"(?<![\w$]){re.escape(name)}(?![\w$])", text)
+        for name in names
+    )
+
+
+def _js_argument(text: str, call: str, index: int) -> str:
+    match = re.search(rf"\b{call}\s*\(([^\n)]*)", text, re.I)
+    if not match:
+        return ""
+    values = [item.strip() for item in match.group(1).split(",")]
+    return values[index] if index < len(values) else ""
+
+
+def _js_sink_cwes(text: str, names: set[str]) -> set[str]:
+    rules = (
+        ("CWE-78", r"(?:child_process\.)?(?:exec|execSync)"),
+        ("CWE-95", r"(?:eval|Function)"),
+        ("CWE-89", r"(?:[A-Za-z_$][\w$]*\.)?(?:query|execute|raw)"),
+        ("CWE-918", r"fetch|axios\.(?:get|post|put|delete)|(?:got|request)"),
+        ("CWE-22", r"(?:fs\.)?(?:readFile|readFileSync|createReadStream|sendFile|unlink|rm)"),
+        ("CWE-1336", r"Handlebars\.compile|ejs\.render|nunjucks\.renderString"),
+    )
+    out: set[str] = set()
+    for cwe, call in rules:
+        for match in re.finditer(rf"\b(?:{call})\s*\(([^\n)]*)", text, re.I):
+            if _js_uses(match.group(1).split(",", 1)[0], names):
+                out.add(cwe)
+    return out
+
+
+def _js_imports(
+    f: _File, modules: dict[str, dict[str, set[tuple[str, int]]]]
+) -> dict[str, set[tuple[str, int, str]]]:
+    current = _js_module_name(f.rel)
+    out: dict[str, set[tuple[str, int, str]]] = {}
+
+    def add(call: str, module: str, name: str) -> None:
+        values = modules.get(module, {}).get(name, set())
+        if values:
+            out.setdefault(call, set()).update(
+                (cwe, index, module) for cwe, index in values
+            )
+
+    for match in re.finditer(
+        r"(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\s*\(\s*"
+        r"[\"']([^\"']+)[\"']\s*\)", f.text
+    ):
+        module = _js_resolve(current, match.group(2), modules)
+        for item in match.group(1).split(","):
+            parts = [part.strip() for part in item.strip().split(":", 1)]
+            if parts and module:
+                add(parts[-1], module, parts[0])
+    for match in re.finditer(
+        r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\s*\(\s*"
+        r"[\"']([^\"']+)[\"']\s*\)", f.text
+    ):
+        module = _js_resolve(current, match.group(2), modules)
+        for name in modules.get(module, {}):
+            add(f"{match.group(1)}.{name}", module, name)
+    for match in re.finditer(
+        r"import\s*\{([^}]+)\}\s*from\s*[\"']([^\"']+)[\"']", f.text
+    ):
+        module = _js_resolve(current, match.group(2), modules)
+        for item in match.group(1).split(","):
+            parts = re.split(r"\s+as\s+", item.strip())
+            if parts and module:
+                add(parts[-1], module, parts[0])
+    for match in re.finditer(
+        r"import\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from\s*"
+        r"[\"']([^\"']+)[\"']", f.text
+    ):
+        module = _js_resolve(current, match.group(2), modules)
+        for name in modules.get(module, {}):
+            add(f"{match.group(1)}.{name}", module, name)
+    return out
+
+
+def _js_summaries(
+    f: _File, imported: dict[str, set[tuple[str, int, str]]] | None = None
+) -> dict[str, set[tuple[str, int]]]:
+    regions = _js_regions(f)
+    summaries = {name: set() for name, _params, _lines, _text in regions}
+    for _ in range(6):
+        before = sum(len(values) for values in summaries.values())
+        for name, parameters, lines, text in regions:
+            for parameter_index, parameter in enumerate(parameters):
+                aliases = _js_aliases(lines, parameter)
+                for cwe in _js_sink_cwes(text, aliases):
+                    summaries[name].add((cwe, parameter_index))
+                for callee, values in summaries.items():
+                    for cwe, target_index in values:
+                        argument = _js_argument(text, re.escape(callee), target_index)
+                        if argument and _js_uses(argument, aliases):
+                            summaries[name].add((cwe, parameter_index))
+                for callee, values in (imported or {}).items():
+                    for cwe, target_index, _module in values:
+                        argument = _js_argument(text, re.escape(callee), target_index)
+                        if argument and _js_uses(argument, aliases):
+                            summaries[name].add((cwe, parameter_index))
+        if sum(len(values) for values in summaries.values()) == before:
+            break
+    return {name: values for name, values in summaries.items() if values}
+
+
+def _js_cross_file_vulnerabilities(files: list[_File]) -> list[dict]:
+    sources = [f for f in files if f.suffix in _JS_SUFFIXES and not _TEST_PATH.search("/" + f.rel)]
+    modules: dict[str, dict[str, set[tuple[str, int]]]] = {}
+    for f in sources:
+        values = _js_summaries(f)
+        if values:
+            modules[_js_module_name(f.rel)] = values
+    for _ in range(5):
+        before = sum(len(v) for funcs in modules.values() for v in funcs.values())
+        for f in sources:
+            module = _js_module_name(f.rel)
+            target = modules.setdefault(module, {})
+            for name, values in _js_summaries(f, _js_imports(f, modules)).items():
+                target.setdefault(name, set()).update(values)
+        after = sum(len(v) for funcs in modules.values() for v in funcs.values())
+        if after == before:
+            break
+
+    out: list[dict] = []
+    for f in sources:
+        calls = _js_imports(f, modules)
+        tainted: set[str] = set()
+        assignment = re.compile(
+            r"^\s*(?:(?:const|let|var)\s+)?([A-Za-z_$][\w$]*)\s*=\s*(.+?);?\s*$"
+        )
+        for _ in range(5):
+            before = len(tainted)
+            for line in f.lines:
+                match = assignment.match(line)
+                if not match or _SCRIPT_SAFE_VALUE.search(match.group(2)):
+                    continue
+                if _SCRIPT_REQUEST_SOURCE.search(match.group(2)) or _js_uses(match.group(2), tainted):
+                    tainted.add(match.group(1))
+            if len(tainted) == before:
+                break
+        for line_number, line in enumerate(f.lines, 1):
+            for call, values in calls.items():
+                for cwe, target_index, module in values:
+                    argument = _js_argument(line, re.escape(call), target_index)
+                    if not argument or not (
+                        _SCRIPT_REQUEST_SOURCE.search(argument) or _js_uses(argument, tainted)
+                    ):
+                        continue
+                    title, remediation = _JS_WRAPPER_DETAILS[cwe]
+                    finding = _repository_vulnerability(
+                        f, line_number, cwe, title, "HIGH", remediation
+                    )
+                    finding["_wrapper_module"] = module
+                    finding["trace"] = {
+                        "entrypoint_file": f.rel,
+                        "wrapper": call,
+                        "sink_module": module,
+                    }
+                    out.append(finding)
     return out
 
 
@@ -4282,6 +4897,9 @@ def _analyse_repositories(files: list[_File]) -> dict:
     vulnerabilities: list[dict] = []
     secrets: list[dict] = []
     module_shell_wrappers: dict[str, set[str]] = {}
+    module_vulnerability_wrappers: dict[
+        str, dict[str, set[tuple[str, int]]]
+    ] = {}
     for source in files:
         if source.suffix != ".py":
             continue
@@ -4295,6 +4913,38 @@ def _analyse_repositories(files: list[_File]) -> dict:
         wrappers = _python_shell_wrapper_names(tree)
         if wrappers:
             module_shell_wrappers[module] = wrappers
+        vulnerability_wrappers = _python_vulnerability_wrapper_summaries(tree)
+        if vulnerability_wrappers:
+            module_vulnerability_wrappers[module] = vulnerability_wrappers
+
+    for _ in range(5):
+        before = sum(
+            len(items) for functions in module_vulnerability_wrappers.values()
+            for items in functions.values()
+        )
+        for source in files:
+            if source.suffix != ".py":
+                continue
+            module = _python_module_name(source.rel)
+            if not module:
+                continue
+            try:
+                tree = ast.parse(source.text)
+            except (SyntaxError, ValueError):
+                continue
+            imported = _python_imported_vulnerability_wrappers(
+                source, module_vulnerability_wrappers
+            )
+            summaries = _python_vulnerability_wrapper_summaries(tree, imported)
+            target = module_vulnerability_wrappers.setdefault(module, {})
+            for name, items in summaries.items():
+                target.setdefault(name, set()).update(items)
+        after = sum(
+            len(items) for functions in module_vulnerability_wrappers.values()
+            for items in functions.values()
+        )
+        if after == before:
+            break
 
     for f in files:
 
@@ -4427,8 +5077,13 @@ def _analyse_repositories(files: list[_File]) -> dict:
             imported_shell_wrappers = _python_imported_shell_wrappers(
                 f, module_shell_wrappers
             )
+            imported_vulnerability_wrappers = (
+                _python_imported_vulnerability_wrappers(
+                    f, module_vulnerability_wrappers
+                )
+            )
             for vuln in _python_repository_vulnerabilities(
-                f, imported_shell_wrappers
+                f, imported_shell_wrappers, imported_vulnerability_wrappers
             ):
 
 
@@ -4540,6 +5195,29 @@ def _analyse_repositories(files: list[_File]) -> dict:
                         break
                     secrets.append({"file": f.rel, "line": i + 1, "type": stype, "redacted": True})
                     break
+
+    for vuln in _js_cross_file_vulnerabilities(files):
+        if any(
+            old["file"] == vuln["file"]
+            and old["cwe"] == vuln["cwe"]
+            and old["line"] == vuln["line"]
+            for old in vulnerabilities
+        ):
+            continue
+        vulnerabilities.append(vuln)
+
+    reached_wrappers = {
+        (str(item.get("_wrapper_module") or ""), item["cwe"])
+        for item in vulnerabilities if item.get("_wrapper_module")
+    }
+    compacted: list[dict] = []
+    for item in vulnerabilities:
+        module = _python_module_name(item["file"]) or _js_module_name(item["file"])
+        if not item.get("_wrapper_module") and (module, item["cwe"]) in reached_wrappers:
+            continue
+        item.pop("_wrapper_module", None)
+        compacted.append(item)
+    vulnerabilities = compacted
 
     for vuln in _repository_scope_vulnerabilities(files):
         if any(

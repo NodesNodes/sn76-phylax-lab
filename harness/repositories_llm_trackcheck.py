@@ -48,6 +48,8 @@ def _finding(**changes):
         "secret_type": "",
         "package": "custom-safe-lib",
         "related": "",
+        "evidence_for": "The dependency is present in package.json at the referenced entry.",
+        "evidence_against": "The repository has no scoped registry pin for this dependency.",
     }
     finding.update(changes)
     return finding
@@ -72,12 +74,14 @@ def fake_urlopen(request, timeout=0):
         _finding(
             kind="vulnerability",
             category="command_injection",
-            title="Claim points outside the supplied file",
-            description="This deliberately uses an impossible source line and must be rejected.",
+            title="Claim has no concrete counter-evidence",
+            description="This uses a real line but does not inspect any guard and must be rejected.",
             file="src/app.py",
-            line=999,
+            line=1,
             cwe="CWE-78",
             package="",
+            evidence_for="A function exists at this line and might receive unsafe input.",
+            evidence_against="none",
         ),
     ]
     content = json.dumps({
@@ -160,6 +164,11 @@ def main() -> int:
             system = request["body"]["messages"][0]["content"]
             assert "evidence-exact" in system
             assert "vulnerable_dependency" in system
+            assert "counter-hypothesis" in system
+            schema = request["body"]["response_format"]["json_schema"]["schema"]
+            finding_schema = schema["properties"]["findings"]["items"]
+            assert "evidence_for" in finding_schema["required"]
+            assert "evidence_against" in finding_schema["required"]
             assert request["body"]["model"] == "openai/gpt-4.1-mini"
         print("repository LLM: 2/2 agents passed strict supply-chain grounding")
         return 0
